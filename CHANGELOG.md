@@ -27,7 +27,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - `load_point_cloud()` for PLY, LAS/LAZ, CSV, NPZ, Parquet formats
   - `export_parquet()` for survi-compatible training data export
 - Pydantic models for all constraint types and training samples
-- Comprehensive test suite (48 tests)
+- Comprehensive test suite (56 tests including equivalence tests vs sdf-labeler backend)
 
 ### Dependencies
 
