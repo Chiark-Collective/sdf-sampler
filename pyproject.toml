@@ -1,6 +1,6 @@
 [project]
 name = "sdf-sampler"
-version = "0.1.0"
+version = "0.2.0"
 description = "Auto-analysis and sampling of point clouds for SDF (Signed Distance Field) training data generation"
 readme = "README.md"
 license = { text = "MIT" }
@@ -42,8 +42,11 @@ dev = [
 ]
 all = ["sdf-sampler[io,dev]"]
 
+[project.scripts]
+sdf-sampler = "sdf_sampler.cli:main"
+
 [project.urls]
-Repository = "https://github.com/chiark/sdf-sampler"
+Repository = "https://github.com/Chiark-Collective/sdf-sampler"
 
 [build-system]
 requires = ["hatchling"]

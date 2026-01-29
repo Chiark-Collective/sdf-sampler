@@ -79,3 +79,4 @@ dmypy.json
 
 # Secrets
 .pypi_token.env
+*.env
