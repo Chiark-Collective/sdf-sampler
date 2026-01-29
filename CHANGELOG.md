@@ -5,6 +5,19 @@ All notable changes to sdf-sampler will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.0] - 2025-01-29
+
+### Added
+
+- **Full parameter control** in CLI and SDK
+  - All analysis options exposed: `--min-gap-size`, `--cone-angle`, `--idw-sample-count`, etc.
+  - All sampling options exposed: `--samples-per-primitive`, `--inverse-square-falloff`, etc.
+  - Output mode control: `--flood-fill-output`, `--voxel-regions-output` (boxes/samples/both)
+- **Surface point inclusion**
+  - `--include-surface-points` flag to include original points with phi=0
+  - `--surface-point-ratio` to control fraction included (default 10%)
+  - SDK: `sampler.generate(..., include_surface_points=True, surface_point_ratio=0.1)`
+
 ## [0.2.0] - 2025-01-29
 
 ### Added

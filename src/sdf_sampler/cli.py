@@ -1,5 +1,5 @@
 # ABOUTME: Command-line interface for sdf-sampler
-# ABOUTME: Provides analyze, sample, and pipeline commands
+# ABOUTME: Provides analyze, sample, and pipeline commands with full parameter control
 
 """
 CLI for sdf-sampler.
@@ -16,6 +16,164 @@ import sys
 from pathlib import Path
 
 import numpy as np
+
+
+def add_analysis_options(parser: argparse.ArgumentParser) -> None:
+    """Add analysis configuration options to a parser."""
+    group = parser.add_argument_group("Analysis Options")
+
+    group.add_argument(
+        "--min-gap-size",
+        type=float,
+        default=0.10,
+        help="Minimum gap size for flood fill in meters (default: 0.10)",
+    )
+    group.add_argument(
+        "--max-grid-dim",
+        type=int,
+        default=200,
+        help="Maximum voxel grid dimension (default: 200)",
+    )
+    group.add_argument(
+        "--cone-angle",
+        type=float,
+        default=15.0,
+        help="Ray propagation cone half-angle in degrees (default: 15.0)",
+    )
+    group.add_argument(
+        "--normal-offset-pairs",
+        type=int,
+        default=40,
+        help="Number of box pairs for normal_offset algorithm (default: 40)",
+    )
+    group.add_argument(
+        "--max-boxes",
+        type=int,
+        default=30,
+        help="Maximum boxes per algorithm (default: 30)",
+    )
+    group.add_argument(
+        "--overlap-threshold",
+        type=float,
+        default=0.5,
+        help="Overlap threshold for box simplification (default: 0.5)",
+    )
+    group.add_argument(
+        "--idw-sample-count",
+        type=int,
+        default=1000,
+        help="Number of IDW samples to generate (default: 1000)",
+    )
+    group.add_argument(
+        "--idw-max-distance",
+        type=float,
+        default=0.5,
+        help="Maximum IDW distance from surface in meters (default: 0.5)",
+    )
+    group.add_argument(
+        "--idw-power",
+        type=float,
+        default=2.0,
+        help="IDW power factor (default: 2.0)",
+    )
+    group.add_argument(
+        "--hull-alpha",
+        type=float,
+        default=1.0,
+        help="Alpha shape parameter for hull filtering (default: 1.0)",
+    )
+    group.add_argument(
+        "--flood-fill-output",
+        type=str,
+        choices=["boxes", "samples", "both"],
+        default="samples",
+        help="Output mode for flood fill (default: samples)",
+    )
+    group.add_argument(
+        "--flood-fill-samples",
+        type=int,
+        default=500,
+        help="Number of sample points from flood fill (default: 500)",
+    )
+    group.add_argument(
+        "--voxel-regions-output",
+        type=str,
+        choices=["boxes", "samples", "both"],
+        default="samples",
+        help="Output mode for voxel regions (default: samples)",
+    )
+    group.add_argument(
+        "--voxel-regions-samples",
+        type=int,
+        default=500,
+        help="Number of sample points from voxel regions (default: 500)",
+    )
+
+
+def add_sampling_options(parser: argparse.ArgumentParser) -> None:
+    """Add sampling configuration options to a parser."""
+    group = parser.add_argument_group("Sampling Options")
+
+    group.add_argument(
+        "-n", "--total-samples",
+        type=int,
+        default=10000,
+        help="Total number of samples to generate (default: 10000)",
+    )
+    group.add_argument(
+        "-s", "--strategy",
+        type=str,
+        choices=["constant", "density", "inverse_square"],
+        default="inverse_square",
+        help="Sampling strategy (default: inverse_square)",
+    )
+    group.add_argument(
+        "--seed",
+        type=int,
+        default=None,
+        help="Random seed for reproducibility",
+    )
+    group.add_argument(
+        "--samples-per-primitive",
+        type=int,
+        default=100,
+        help="Samples per primitive for CONSTANT strategy (default: 100)",
+    )
+    group.add_argument(
+        "--inverse-square-base",
+        type=int,
+        default=100,
+        help="Base samples at surface for INVERSE_SQUARE (default: 100)",
+    )
+    group.add_argument(
+        "--inverse-square-falloff",
+        type=float,
+        default=2.0,
+        help="Falloff exponent for INVERSE_SQUARE (default: 2.0)",
+    )
+    group.add_argument(
+        "--near-band",
+        type=float,
+        default=0.02,
+        help="Near-band width around surface (default: 0.02)",
+    )
+
+
+def add_output_options(parser: argparse.ArgumentParser) -> None:
+    """Add output configuration options to a parser."""
+    group = parser.add_argument_group("Output Options")
+
+    group.add_argument(
+        "--include-surface-points",
+        action="store_true",
+        help="Include original surface points (phi=0) in output",
+    )
+    group.add_argument(
+        "--surface-point-ratio",
+        type=float,
+        default=0.1,
+        help="Ratio of surface points to include (default: 0.1 = 10%%)",
+    )
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -63,6 +221,7 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="Verbose output",
     )
+    add_analysis_options(analyze_parser)
 
     # sample command
     sample_parser = subparsers.add_parser(
@@ -86,29 +245,12 @@ def main(argv: list[str] | None = None) -> int:
         help="Output parquet file (default: <input>_samples.parquet)",
     )
     sample_parser.add_argument(
-        "-n", "--total-samples",
-        type=int,
-        default=10000,
-        help="Total number of samples to generate (default: 10000)",
-    )
-    sample_parser.add_argument(
-        "-s", "--strategy",
-        type=str,
-        choices=["constant", "density", "inverse_square"],
-        default="inverse_square",
-        help="Sampling strategy (default: inverse_square)",
-    )
-    sample_parser.add_argument(
-        "--seed",
-        type=int,
-        default=None,
-        help="Random seed for reproducibility",
-    )
-    sample_parser.add_argument(
         "-v", "--verbose",
         action="store_true",
         help="Verbose output",
     )
+    add_sampling_options(sample_parser)
+    add_output_options(sample_parser)
 
     # pipeline command
     pipeline_parser = subparsers.add_parser(
@@ -134,23 +276,9 @@ def main(argv: list[str] | None = None) -> int:
         help="Algorithms to run",
     )
     pipeline_parser.add_argument(
-        "-n", "--total-samples",
-        type=int,
-        default=10000,
-        help="Total number of samples to generate (default: 10000)",
-    )
-    pipeline_parser.add_argument(
-        "-s", "--strategy",
-        type=str,
-        choices=["constant", "density", "inverse_square"],
-        default="inverse_square",
-        help="Sampling strategy (default: inverse_square)",
-    )
-    pipeline_parser.add_argument(
-        "--seed",
-        type=int,
-        default=None,
-        help="Random seed for reproducibility",
+        "--no-hull-filter",
+        action="store_true",
+        help="Disable hull filtering",
     )
     pipeline_parser.add_argument(
         "--save-constraints",
@@ -163,6 +291,9 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="Verbose output",
     )
+    add_analysis_options(pipeline_parser)
+    add_sampling_options(pipeline_parser)
+    add_output_options(pipeline_parser)
 
     # info command
     info_parser = subparsers.add_parser(
@@ -198,10 +329,46 @@ def main(argv: list[str] | None = None) -> int:
     return 0
 
 
+def build_analysis_options(args: argparse.Namespace):
+    """Build AutoAnalysisOptions from CLI args."""
+    from sdf_sampler.config import AutoAnalysisOptions
+
+    return AutoAnalysisOptions(
+        min_gap_size=args.min_gap_size,
+        max_grid_dim=args.max_grid_dim,
+        cone_angle=args.cone_angle,
+        normal_offset_pairs=args.normal_offset_pairs,
+        max_boxes=args.max_boxes,
+        overlap_threshold=args.overlap_threshold,
+        idw_sample_count=args.idw_sample_count,
+        idw_max_distance=args.idw_max_distance,
+        idw_power=args.idw_power,
+        hull_filter_enabled=not getattr(args, 'no_hull_filter', False),
+        hull_alpha=args.hull_alpha,
+        flood_fill_output=args.flood_fill_output,
+        flood_fill_sample_count=args.flood_fill_samples,
+        voxel_regions_output=args.voxel_regions_output,
+        voxel_regions_sample_count=args.voxel_regions_samples,
+    )
+
+
+def build_sampler_config(args: argparse.Namespace):
+    """Build SamplerConfig from CLI args."""
+    from sdf_sampler.config import SamplerConfig
+
+    return SamplerConfig(
+        total_samples=args.total_samples,
+        samples_per_primitive=args.samples_per_primitive,
+        inverse_square_base_samples=args.inverse_square_base,
+        inverse_square_falloff=args.inverse_square_falloff,
+        near_band=args.near_band,
+        seed=args.seed or 0,
+    )
+
+
 def cmd_analyze(args: argparse.Namespace) -> int:
     """Run analyze command."""
     from sdf_sampler import SDFAnalyzer, load_point_cloud
-    from sdf_sampler.config import AutoAnalysisOptions
 
     if not args.input.exists():
         print(f"Error: Input file not found: {args.input}", file=sys.stderr)
@@ -222,9 +389,7 @@ def cmd_analyze(args: argparse.Namespace) -> int:
         print(f"  Points: {len(xyz):,}")
         print(f"  Normals: {'yes' if normals is not None else 'no'}")
 
-    options = AutoAnalysisOptions(
-        hull_filter_enabled=not args.no_hull_filter,
-    )
+    options = build_analysis_options(args)
 
     if args.verbose:
         algos = args.algorithms or ["all"]
@@ -284,7 +449,8 @@ def cmd_sample(args: argparse.Namespace) -> int:
         print(f"  Constraints: {len(constraints)}")
         print(f"Generating {args.total_samples:,} samples with strategy: {args.strategy}")
 
-    sampler = SDFSampler()
+    config = build_sampler_config(args)
+    sampler = SDFSampler(config=config)
     samples = sampler.generate(
         xyz=xyz,
         normals=normals,
@@ -293,6 +459,12 @@ def cmd_sample(args: argparse.Namespace) -> int:
         strategy=args.strategy,
         seed=args.seed,
     )
+
+    # Include surface points if requested
+    if args.include_surface_points:
+        samples = _add_surface_points(
+            samples, xyz, normals, args.surface_point_ratio, args.verbose
+        )
 
     if args.verbose:
         print(f"Generated {len(samples)} samples")
@@ -305,7 +477,6 @@ def cmd_sample(args: argparse.Namespace) -> int:
 def cmd_pipeline(args: argparse.Namespace) -> int:
     """Run full pipeline: analyze + sample + export."""
     from sdf_sampler import SDFAnalyzer, SDFSampler, load_point_cloud
-    from sdf_sampler.config import AutoAnalysisOptions
 
     if not args.input.exists():
         print(f"Error: Input file not found: {args.input}", file=sys.stderr)
@@ -331,7 +502,7 @@ def cmd_pipeline(args: argparse.Namespace) -> int:
         algos = args.algorithms or ["all"]
         print(f"Running analysis: {', '.join(algos)}")
 
-    options = AutoAnalysisOptions()
+    options = build_analysis_options(args)
     analyzer = SDFAnalyzer()
     result = analyzer.analyze(
         xyz=xyz,
@@ -356,7 +527,8 @@ def cmd_pipeline(args: argparse.Namespace) -> int:
     if args.verbose:
         print(f"Generating {args.total_samples:,} samples with strategy: {args.strategy}")
 
-    sampler = SDFSampler()
+    config = build_sampler_config(args)
+    sampler = SDFSampler(config=config)
     samples = sampler.generate(
         xyz=xyz,
         normals=normals,
@@ -366,6 +538,12 @@ def cmd_pipeline(args: argparse.Namespace) -> int:
         seed=args.seed,
     )
 
+    # Include surface points if requested
+    if args.include_surface_points:
+        samples = _add_surface_points(
+            samples, xyz, normals, args.surface_point_ratio, args.verbose
+        )
+
     if args.verbose:
         print(f"Generated {len(samples)} samples")
 
@@ -373,6 +551,52 @@ def cmd_pipeline(args: argparse.Namespace) -> int:
     sampler.export_parquet(samples, str(output))
     print(f"Saved samples to: {output}")
     return 0
+
+
+def _add_surface_points(
+    samples: list,
+    xyz: np.ndarray,
+    normals: np.ndarray | None,
+    ratio: float,
+    verbose: bool,
+) -> list:
+    """Add surface points to sample list."""
+    from sdf_sampler.models import TrainingSample
+
+    n_surface = int(len(xyz) * ratio)
+    if n_surface == 0:
+        return samples
+
+    # Subsample if needed
+    if n_surface < len(xyz):
+        indices = np.random.choice(len(xyz), n_surface, replace=False)
+        surface_xyz = xyz[indices]
+        surface_normals = normals[indices] if normals is not None else None
+    else:
+        surface_xyz = xyz
+        surface_normals = normals
+
+    if verbose:
+        print(f"Adding {len(surface_xyz):,} surface points (phi=0)")
+
+    for i in range(len(surface_xyz)):
+        sample = TrainingSample(
+            x=float(surface_xyz[i, 0]),
+            y=float(surface_xyz[i, 1]),
+            z=float(surface_xyz[i, 2]),
+            phi=0.0,
+            weight=1.0,
+            source="surface",
+            is_surface=True,
+            is_free=False,
+        )
+        if surface_normals is not None:
+            sample.nx = float(surface_normals[i, 0])
+            sample.ny = float(surface_normals[i, 1])
+            sample.nz = float(surface_normals[i, 2])
+        samples.append(sample)
+
+    return samples
 
 
 def cmd_info(args: argparse.Namespace) -> int:

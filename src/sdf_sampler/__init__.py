@@ -47,7 +47,7 @@ from sdf_sampler.models import (
 )
 from sdf_sampler.sampler import SDFSampler
 
-__version__ = "0.2.0"
+__version__ = "0.3.0"
 
 __all__ = [
     # Main classes

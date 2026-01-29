@@ -65,6 +65,8 @@ class SDFSampler:
         total_samples: int | None = None,
         strategy: str | SamplingStrategy = SamplingStrategy.INVERSE_SQUARE,
         seed: int | None = None,
+        include_surface_points: bool = False,
+        surface_point_ratio: float = 0.1,
     ) -> list[TrainingSample]:
         """Generate training samples from constraints.
 
@@ -75,6 +77,8 @@ class SDFSampler:
             total_samples: Total samples to generate (default from config)
             strategy: Sampling strategy (CONSTANT, DENSITY, or INVERSE_SQUARE)
             seed: Random seed for reproducibility
+            include_surface_points: If True, include original surface points with phi=0
+            surface_point_ratio: Fraction of surface points to include (default 0.1 = 10%)
 
         Returns:
             List of TrainingSample objects
@@ -85,6 +89,7 @@ class SDFSampler:
             ...     constraints=result.constraints,
             ...     strategy="inverse_square",
             ...     total_samples=50000,
+            ...     include_surface_points=True,
             ... )
         """
         xyz = np.asarray(xyz)
@@ -152,6 +157,63 @@ class SDFSampler:
                 samples.extend(self._sample_slice_selection(constraint, xyz, normals))
             elif isinstance(constraint, SamplePointConstraint):
                 samples.extend(self._sample_sample_point(constraint))
+
+        # Add surface points if requested
+        if include_surface_points:
+            samples.extend(
+                self._generate_surface_points(xyz, normals, surface_point_ratio, rng)
+            )
+
+        return samples
+
+    def _generate_surface_points(
+        self,
+        xyz: np.ndarray,
+        normals: np.ndarray | None,
+        ratio: float,
+        rng: np.random.Generator,
+    ) -> list[TrainingSample]:
+        """Generate surface point samples (phi=0) from the input point cloud.
+
+        Args:
+            xyz: Point cloud positions (N, 3)
+            normals: Optional point normals (N, 3)
+            ratio: Fraction of points to include (0.0 to 1.0)
+            rng: Random number generator
+
+        Returns:
+            List of TrainingSample objects with phi=0
+        """
+        n_surface = int(len(xyz) * ratio)
+        if n_surface == 0:
+            return []
+
+        # Subsample if needed
+        if n_surface < len(xyz):
+            indices = rng.choice(len(xyz), n_surface, replace=False)
+            surface_xyz = xyz[indices]
+            surface_normals = normals[indices] if normals is not None else None
+        else:
+            surface_xyz = xyz
+            surface_normals = normals
+
+        samples = []
+        for i in range(len(surface_xyz)):
+            sample = TrainingSample(
+                x=float(surface_xyz[i, 0]),
+                y=float(surface_xyz[i, 1]),
+                z=float(surface_xyz[i, 2]),
+                phi=0.0,
+                weight=1.0,
+                source="surface",
+                is_surface=True,
+                is_free=False,
+            )
+            if surface_normals is not None:
+                sample.nx = float(surface_normals[i, 0])
+                sample.ny = float(surface_normals[i, 1])
+                sample.nz = float(surface_normals[i, 2])
+            samples.append(sample)
 
         return samples
 
