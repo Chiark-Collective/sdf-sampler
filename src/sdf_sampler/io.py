@@ -1,6 +1,7 @@
 # ABOUTME: I/O utilities for point cloud loading and sample export
 # ABOUTME: Supports PLY, LAS/LAZ, CSV, NPZ, and Parquet formats
 
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -8,6 +9,79 @@ import numpy as np
 import pandas as pd
 
 from sdf_sampler.models.samples import TrainingSample
+
+
+@dataclass
+class Mesh:
+    """Triangle mesh with vertices, faces, and optional normals.
+
+    Used for area-weighted surface sampling where we need face information.
+    """
+
+    vertices: np.ndarray  # (N, 3) vertex positions
+    faces: np.ndarray  # (M, 3) triangle face indices
+    vertex_normals: np.ndarray | None = None  # (N, 3) per-vertex normals
+
+
+def load_mesh(
+    path: str | Path,
+    **kwargs: Any,
+) -> Mesh:
+    """Load mesh from file (preserves face information).
+
+    Use this instead of load_point_cloud() when you need area-weighted
+    surface sampling, which requires face information.
+
+    Supported formats:
+    - PLY (requires trimesh in [io] extras)
+    - OBJ (requires trimesh in [io] extras)
+    - STL (requires trimesh in [io] extras)
+    - OFF (requires trimesh in [io] extras)
+
+    Args:
+        path: Path to mesh file
+        **kwargs: Additional arguments for trimesh loader
+
+    Returns:
+        Mesh object with vertices, faces, and optional normals
+
+    Example:
+        >>> mesh = load_mesh("model.ply")
+        >>> print(f"Vertices: {len(mesh.vertices)}, Faces: {len(mesh.faces)}")
+    """
+    try:
+        import trimesh
+    except ImportError as e:
+        raise ImportError(
+            "trimesh is required for mesh loading. "
+            "Install with: pip install sdf-sampler[io]"
+        ) from e
+
+    path = Path(path)
+    loaded = trimesh.load(path, **kwargs)
+
+    # Handle Scene objects (multiple meshes)
+    if isinstance(loaded, trimesh.Scene):
+        # Combine all meshes into one
+        meshes = [g for g in loaded.geometry.values() if isinstance(g, trimesh.Trimesh)]
+        if not meshes:
+            raise ValueError(f"No triangle meshes found in {path}")
+        loaded = trimesh.util.concatenate(meshes)
+
+    if not isinstance(loaded, trimesh.Trimesh):
+        raise ValueError(
+            f"File {path} did not load as a triangle mesh. "
+            "Use load_point_cloud() for point cloud files."
+        )
+
+    vertices = np.asarray(loaded.vertices)
+    faces = np.asarray(loaded.faces)
+
+    vertex_normals = None
+    if loaded.vertex_normals is not None and len(loaded.vertex_normals) == len(vertices):
+        vertex_normals = np.asarray(loaded.vertex_normals)
+
+    return Mesh(vertices=vertices, faces=faces, vertex_normals=vertex_normals)
 
 
 def load_point_cloud(
@@ -37,8 +111,8 @@ def load_point_cloud(
     path = Path(path)
     suffix = path.suffix.lower()
 
-    if suffix == ".ply":
-        return _load_ply(path, **kwargs)
+    if suffix in (".ply", ".obj", ".stl", ".off"):
+        return _load_mesh_vertices(path, **kwargs)
     elif suffix in (".las", ".laz"):
         return _load_las(path, **kwargs)
     elif suffix == ".csv":
@@ -76,27 +150,33 @@ def export_parquet(
     return path
 
 
-def _load_ply(path: Path, **kwargs: Any) -> tuple[np.ndarray, np.ndarray | None]:
-    """Load PLY file using trimesh."""
+def _load_mesh_vertices(path: Path, **kwargs: Any) -> tuple[np.ndarray, np.ndarray | None]:
+    """Load mesh file using trimesh and return vertices."""
     try:
         import trimesh
     except ImportError as e:
         raise ImportError(
-            "trimesh is required for PLY support. "
+            "trimesh is required for mesh file support. "
             "Install with: pip install sdf-sampler[io]"
         ) from e
 
-    mesh = trimesh.load(path, **kwargs)
+    loaded = trimesh.load(path, **kwargs)
+
+    # Handle Scene objects (multiple meshes)
+    if isinstance(loaded, trimesh.Scene):
+        meshes = [g for g in loaded.geometry.values() if isinstance(g, trimesh.Trimesh)]
+        if meshes:
+            loaded = trimesh.util.concatenate(meshes)
 
     # Handle both PointCloud and Trimesh objects
-    if hasattr(mesh, "vertices"):
-        xyz = np.asarray(mesh.vertices)
+    if hasattr(loaded, "vertices"):
+        xyz = np.asarray(loaded.vertices)
     else:
-        xyz = np.asarray(mesh.points if hasattr(mesh, "points") else mesh)
+        xyz = np.asarray(loaded.points if hasattr(loaded, "points") else loaded)
 
     normals = None
-    if hasattr(mesh, "vertex_normals") and mesh.vertex_normals is not None:
-        normals = np.asarray(mesh.vertex_normals)
+    if hasattr(loaded, "vertex_normals") and loaded.vertex_normals is not None:
+        normals = np.asarray(loaded.vertex_normals)
         if normals.shape != xyz.shape:
             normals = None
 

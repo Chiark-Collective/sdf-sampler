@@ -1,6 +1,6 @@
 [project]
 name = "sdf-sampler"
-version = "0.4.0"
+version = "0.5.0"
 description = "Auto-analysis and sampling of point clouds for SDF (Signed Distance Field) training data generation"
 readme = "README.md"
 license = { text = "MIT" }

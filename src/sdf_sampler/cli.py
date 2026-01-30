@@ -174,6 +174,14 @@ def add_output_options(parser: argparse.ArgumentParser) -> None:
         default=1000,
         help="Number of surface points to include (default: 1000)",
     )
+    group.add_argument(
+        "--mesh",
+        type=Path,
+        default=None,
+        help="Mesh file for area-weighted surface sampling (PLY/OBJ/STL). "
+             "If provided, surface points are sampled uniformly by surface area "
+             "instead of by vertex count. Recommended for meshes with uneven vertex density.",
+    )
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -418,7 +426,7 @@ def cmd_analyze(args: argparse.Namespace) -> int:
 
 def cmd_sample(args: argparse.Namespace) -> int:
     """Run sample command."""
-    from sdf_sampler import SDFSampler, load_point_cloud
+    from sdf_sampler import SDFSampler, load_mesh, load_point_cloud
 
     if not args.input.exists():
         print(f"Error: Input file not found: {args.input}", file=sys.stderr)
@@ -439,6 +447,19 @@ def cmd_sample(args: argparse.Namespace) -> int:
         print(f"Error loading point cloud: {e}", file=sys.stderr)
         return 1
 
+    # Load mesh for area-weighted surface sampling if provided
+    mesh = None
+    if args.mesh:
+        if args.verbose:
+            print(f"Loading mesh for area-weighted sampling: {args.mesh}")
+        try:
+            mesh = load_mesh(str(args.mesh))
+            if args.verbose:
+                print(f"  Vertices: {len(mesh.vertices):,}, Faces: {len(mesh.faces):,}")
+        except Exception as e:
+            print(f"Error loading mesh: {e}", file=sys.stderr)
+            return 1
+
     if args.verbose:
         print(f"Loading constraints: {args.constraints}")
 
@@ -448,6 +469,9 @@ def cmd_sample(args: argparse.Namespace) -> int:
     if args.verbose:
         print(f"  Constraints: {len(constraints)}")
         print(f"Generating {args.total_samples:,} samples with strategy: {args.strategy}")
+        if args.include_surface_points:
+            mode = "area-weighted" if mesh else "vertex-based"
+            print(f"  Including {args.surface_point_count:,} surface points ({mode})")
 
     config = build_sampler_config(args)
     sampler = SDFSampler(config=config)
@@ -458,13 +482,10 @@ def cmd_sample(args: argparse.Namespace) -> int:
         total_samples=args.total_samples,
         strategy=args.strategy,
         seed=args.seed,
+        include_surface_points=args.include_surface_points,
+        surface_point_count=args.surface_point_count,
+        mesh=mesh,
     )
-
-    # Include surface points if requested
-    if args.include_surface_points:
-        samples = _add_surface_points(
-            samples, xyz, normals, args.surface_point_count, args.verbose
-        )
 
     if args.verbose:
         print(f"Generated {len(samples)} samples")
@@ -476,7 +497,7 @@ def cmd_sample(args: argparse.Namespace) -> int:
 
 def cmd_pipeline(args: argparse.Namespace) -> int:
     """Run full pipeline: analyze + sample + export."""
-    from sdf_sampler import SDFAnalyzer, SDFSampler, load_point_cloud
+    from sdf_sampler import SDFAnalyzer, SDFSampler, load_mesh, load_point_cloud
 
     if not args.input.exists():
         print(f"Error: Input file not found: {args.input}", file=sys.stderr)
@@ -496,6 +517,19 @@ def cmd_pipeline(args: argparse.Namespace) -> int:
     if args.verbose:
         print(f"  Points: {len(xyz):,}")
         print(f"  Normals: {'yes' if normals is not None else 'no'}")
+
+    # Load mesh for area-weighted surface sampling if provided
+    mesh = None
+    if args.mesh:
+        if args.verbose:
+            print(f"Loading mesh for area-weighted sampling: {args.mesh}")
+        try:
+            mesh = load_mesh(str(args.mesh))
+            if args.verbose:
+                print(f"  Vertices: {len(mesh.vertices):,}, Faces: {len(mesh.faces):,}")
+        except Exception as e:
+            print(f"Error loading mesh: {e}", file=sys.stderr)
+            return 1
 
     # Analyze
     if args.verbose:
@@ -526,6 +560,9 @@ def cmd_pipeline(args: argparse.Namespace) -> int:
     # Sample
     if args.verbose:
         print(f"Generating {args.total_samples:,} samples with strategy: {args.strategy}")
+        if args.include_surface_points:
+            mode = "area-weighted" if mesh else "vertex-based"
+            print(f"  Including {args.surface_point_count:,} surface points ({mode})")
 
     config = build_sampler_config(args)
     sampler = SDFSampler(config=config)
@@ -536,13 +573,10 @@ def cmd_pipeline(args: argparse.Namespace) -> int:
         total_samples=args.total_samples,
         strategy=args.strategy,
         seed=args.seed,
+        include_surface_points=args.include_surface_points,
+        surface_point_count=args.surface_point_count,
+        mesh=mesh,
     )
-
-    # Include surface points if requested
-    if args.include_surface_points:
-        samples = _add_surface_points(
-            samples, xyz, normals, args.surface_point_count, args.verbose
-        )
 
     if args.verbose:
         print(f"Generated {len(samples)} samples")
@@ -551,52 +585,6 @@ def cmd_pipeline(args: argparse.Namespace) -> int:
     sampler.export_parquet(samples, str(output))
     print(f"Saved samples to: {output}")
     return 0
-
-
-def _add_surface_points(
-    samples: list,
-    xyz: np.ndarray,
-    normals: np.ndarray | None,
-    count: int,
-    verbose: bool,
-) -> list:
-    """Add surface points to sample list."""
-    from sdf_sampler.models import TrainingSample
-
-    n_surface = min(count, len(xyz))
-    if n_surface <= 0:
-        return samples
-
-    # Subsample if needed
-    if n_surface < len(xyz):
-        indices = np.random.choice(len(xyz), n_surface, replace=False)
-        surface_xyz = xyz[indices]
-        surface_normals = normals[indices] if normals is not None else None
-    else:
-        surface_xyz = xyz
-        surface_normals = normals
-
-    if verbose:
-        print(f"Adding {len(surface_xyz):,} surface points (phi=0)")
-
-    for i in range(len(surface_xyz)):
-        sample = TrainingSample(
-            x=float(surface_xyz[i, 0]),
-            y=float(surface_xyz[i, 1]),
-            z=float(surface_xyz[i, 2]),
-            phi=0.0,
-            weight=1.0,
-            source="surface",
-            is_surface=True,
-            is_free=False,
-        )
-        if surface_normals is not None:
-            sample.nx = float(surface_normals[i, 0])
-            sample.ny = float(surface_normals[i, 1])
-            sample.nz = float(surface_normals[i, 2])
-        samples.append(sample)
-
-    return samples
 
 
 def cmd_info(args: argparse.Namespace) -> int:

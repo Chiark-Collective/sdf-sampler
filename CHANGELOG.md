@@ -5,6 +5,35 @@ All notable changes to sdf-sampler will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.0] - 2025-01-30
+
+### Added
+
+- **Area-weighted surface sampling** - New sampling mode that distributes surface points uniformly by surface area instead of by vertex count. Essential for meshes with uneven vertex density (e.g., trench floors vs walls).
+  - New `load_mesh()` function returns `Mesh` object with vertices, faces, and normals
+  - Pass `mesh=` parameter to `sampler.generate()` for area-weighted sampling
+  - CLI: `--mesh path/to/mesh.obj` enables area-weighted mode
+  - Supports PLY, OBJ, STL, OFF mesh formats
+- **OBJ/STL/OFF file support** - `load_point_cloud()` now supports additional mesh formats via trimesh
+
+### Example
+
+```python
+from sdf_sampler import SDFSampler, load_mesh, load_point_cloud
+
+# Load mesh for area-weighted sampling
+mesh = load_mesh("model.obj")
+xyz, normals = load_point_cloud("model.obj")
+
+# Area-weighted gives uniform coverage by surface area
+samples = sampler.generate(
+    xyz=xyz, constraints=constraints,
+    include_surface_points=True,
+    surface_point_count=1000,
+    mesh=mesh,  # Enables area-weighted sampling
+)
+```
+
 ## [0.4.0] - 2025-01-30
 
 ### Changed

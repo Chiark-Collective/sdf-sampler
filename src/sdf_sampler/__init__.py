@@ -28,7 +28,7 @@ Example usage:
 
 from sdf_sampler.analyzer import SDFAnalyzer
 from sdf_sampler.config import AnalyzerConfig, SamplerConfig
-from sdf_sampler.io import export_parquet, load_point_cloud
+from sdf_sampler.io import Mesh, export_parquet, load_mesh, load_point_cloud
 from sdf_sampler.models import (
     AlgorithmType,
     AnalysisResult,
@@ -47,7 +47,7 @@ from sdf_sampler.models import (
 )
 from sdf_sampler.sampler import SDFSampler
 
-__version__ = "0.4.0"
+__version__ = "0.5.0"
 
 __all__ = [
     # Main classes
@@ -58,6 +58,8 @@ __all__ = [
     "SamplerConfig",
     # I/O
     "load_point_cloud",
+    "load_mesh",
+    "Mesh",
     "export_parquet",
     # Models
     "SignConvention",
