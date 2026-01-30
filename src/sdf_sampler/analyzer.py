@@ -14,6 +14,7 @@ from sdf_sampler.algorithms.voxel_regions import generate_voxel_region_constrain
 from sdf_sampler.config import AnalyzerConfig, AutoAnalysisOptions
 from sdf_sampler.models.analysis import (
     ALL_ALGORITHMS,
+    DEFAULT_ALGORITHMS,
     AlgorithmStats,
     AlgorithmType,
     AnalysisResult,
@@ -93,7 +94,7 @@ class SDFAnalyzer:
                 raise ValueError(f"normals shape {normals.shape} doesn't match xyz {xyz.shape}")
 
         # Determine which algorithms to run
-        algo_list = algorithms if algorithms else [a.value for a in ALL_ALGORITHMS]
+        algo_list = algorithms if algorithms else [a.value for a in DEFAULT_ALGORITHMS]
         algo_list = [a for a in algo_list if a in [alg.value for alg in ALL_ALGORITHMS]]
 
         # Run algorithms and collect constraints

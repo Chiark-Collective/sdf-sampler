@@ -169,10 +169,10 @@ def add_output_options(parser: argparse.ArgumentParser) -> None:
         help="Include original surface points (phi=0) in output",
     )
     group.add_argument(
-        "--surface-point-ratio",
-        type=float,
-        default=0.1,
-        help="Ratio of surface points to include (default: 0.1 = 10%%)",
+        "--surface-point-count",
+        type=int,
+        default=1000,
+        help="Number of surface points to include (default: 1000)",
     )
 
 
@@ -463,7 +463,7 @@ def cmd_sample(args: argparse.Namespace) -> int:
     # Include surface points if requested
     if args.include_surface_points:
         samples = _add_surface_points(
-            samples, xyz, normals, args.surface_point_ratio, args.verbose
+            samples, xyz, normals, args.surface_point_count, args.verbose
         )
 
     if args.verbose:
@@ -541,7 +541,7 @@ def cmd_pipeline(args: argparse.Namespace) -> int:
     # Include surface points if requested
     if args.include_surface_points:
         samples = _add_surface_points(
-            samples, xyz, normals, args.surface_point_ratio, args.verbose
+            samples, xyz, normals, args.surface_point_count, args.verbose
         )
 
     if args.verbose:
@@ -557,14 +557,14 @@ def _add_surface_points(
     samples: list,
     xyz: np.ndarray,
     normals: np.ndarray | None,
-    ratio: float,
+    count: int,
     verbose: bool,
 ) -> list:
     """Add surface points to sample list."""
     from sdf_sampler.models import TrainingSample
 
-    n_surface = int(len(xyz) * ratio)
-    if n_surface == 0:
+    n_surface = min(count, len(xyz))
+    if n_surface <= 0:
         return samples
 
     # Subsample if needed

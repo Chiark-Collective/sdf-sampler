@@ -5,6 +5,15 @@ All notable changes to sdf-sampler will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.0] - 2025-01-30
+
+### Changed
+
+- **Default algorithms no longer include `normal_idw`** - The `normal_idw` algorithm is now opt-in only. Default algorithms are: `flood_fill`, `voxel_regions`, `normal_offset`. To use `normal_idw`, explicitly pass `algorithms=["normal_idw"]` or include it in your algorithm list.
+- **Surface point count is now a direct count** - Replaced `surface_point_ratio` with `surface_point_count`. Instead of specifying a percentage, you now specify the exact number of surface points to include.
+  - CLI: `--surface-point-count 1000` (default: 1000)
+  - SDK: `sampler.generate(..., include_surface_points=True, surface_point_count=1000)`
+
 ## [0.3.0] - 2025-01-29
 
 ### Added
@@ -15,8 +24,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Output mode control: `--flood-fill-output`, `--voxel-regions-output` (boxes/samples/both)
 - **Surface point inclusion**
   - `--include-surface-points` flag to include original points with phi=0
-  - `--surface-point-ratio` to control fraction included (default 10%)
-  - SDK: `sampler.generate(..., include_surface_points=True, surface_point_ratio=0.1)`
+  - `--surface-point-count` to specify number of surface points (default 1000)
+  - SDK: `sampler.generate(..., include_surface_points=True, surface_point_count=1000)`
 
 ## [0.2.0] - 2025-01-29
 

@@ -66,7 +66,7 @@ class SDFSampler:
         strategy: str | SamplingStrategy = SamplingStrategy.INVERSE_SQUARE,
         seed: int | None = None,
         include_surface_points: bool = False,
-        surface_point_ratio: float = 0.1,
+        surface_point_count: int | None = None,
     ) -> list[TrainingSample]:
         """Generate training samples from constraints.
 
@@ -78,7 +78,7 @@ class SDFSampler:
             strategy: Sampling strategy (CONSTANT, DENSITY, or INVERSE_SQUARE)
             seed: Random seed for reproducibility
             include_surface_points: If True, include original surface points with phi=0
-            surface_point_ratio: Fraction of surface points to include (default 0.1 = 10%)
+            surface_point_count: Number of surface points to include (default: 1000, or len(xyz) if smaller)
 
         Returns:
             List of TrainingSample objects
@@ -160,8 +160,10 @@ class SDFSampler:
 
         # Add surface points if requested
         if include_surface_points:
+            # Default to 1000 surface points, or all points if smaller
+            count = surface_point_count if surface_point_count is not None else min(1000, len(xyz))
             samples.extend(
-                self._generate_surface_points(xyz, normals, surface_point_ratio, rng)
+                self._generate_surface_points(xyz, normals, count, rng)
             )
 
         return samples
@@ -170,7 +172,7 @@ class SDFSampler:
         self,
         xyz: np.ndarray,
         normals: np.ndarray | None,
-        ratio: float,
+        count: int,
         rng: np.random.Generator,
     ) -> list[TrainingSample]:
         """Generate surface point samples (phi=0) from the input point cloud.
@@ -178,14 +180,14 @@ class SDFSampler:
         Args:
             xyz: Point cloud positions (N, 3)
             normals: Optional point normals (N, 3)
-            ratio: Fraction of points to include (0.0 to 1.0)
+            count: Number of surface points to include
             rng: Random number generator
 
         Returns:
             List of TrainingSample objects with phi=0
         """
-        n_surface = int(len(xyz) * ratio)
-        if n_surface == 0:
+        n_surface = min(count, len(xyz))
+        if n_surface <= 0:
             return []
 
         # Subsample if needed
