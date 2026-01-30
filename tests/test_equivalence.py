@@ -759,3 +759,120 @@ class TestFullPipelineEquivalence:
                 f"Sample count ratio too high: {ratio:.2f} "
                 f"(standalone={standalone_sample_count}, backend={backend_sample_count})"
             )
+
+    @requires_backend
+    def test_inverse_square_pipeline_equivalence(self, trench_pointcloud):
+        """Test inverse_square sampling produces equivalent results.
+
+        This is the recommended production workflow: auto-analyze + inverse_square sampling.
+        """
+        xyz, normals = trench_pointcloud
+
+        # Shared analysis options
+        analysis_options = AutoAnalysisOptions(
+            flood_fill_output="samples",
+            flood_fill_sample_count=100,
+            voxel_regions_output="samples",
+            voxel_regions_sample_count=100,
+            idw_sample_count=100,
+            hull_filter_enabled=False,
+        )
+
+        # Run standalone with inverse_square
+        standalone_analyzer = SDFAnalyzer()
+        standalone_result = standalone_analyzer.analyze(
+            xyz=xyz,
+            normals=normals,
+            algorithms=["flood_fill", "voxel_regions", "normal_idw"],
+            options=analysis_options,
+        )
+
+        standalone_sampler = SDFSampler()
+        standalone_samples = standalone_sampler.generate(
+            xyz=xyz,
+            normals=normals,
+            constraints=standalone_result.constraints,
+            strategy="inverse_square",
+            total_samples=5000,
+            seed=42,
+            include_surface_points=False,  # Test without surface points first
+        )
+
+        # Run backend with inverse_square
+        from sdf_labeler_api.config import Settings
+        from sdf_labeler_api.services.auto_analysis_service import AutoAnalysisService
+        from sdf_labeler_api.services.sampling_service import SamplingService
+        from sdf_labeler_api.services.project_service import ProjectService
+        from sdf_labeler_api.services.constraint_service import ConstraintService
+        from sdf_labeler_api.models.project import ProjectCreate
+        from sdf_labeler_api.models.samples import SampleGenerationRequest, SamplingStrategy
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            data_dir = Path(tmpdir)
+
+            import sdf_labeler_api.config as backend_config
+            original_settings = backend_config.settings
+            backend_config.settings = Settings(data_dir=data_dir)
+
+            try:
+                project_service = ProjectService(data_dir)
+                project = project_service.create(ProjectCreate(name="test"))
+                project_id = project.id
+
+                setup_backend_project(data_dir, project_id, xyz, normals)
+
+                # Analyze
+                backend_analysis = AutoAnalysisService(backend_config.settings)
+                backend_options = get_backend_options(analysis_options)
+                backend_result = asyncio.run(backend_analysis.analyze(
+                    project_id=project_id,
+                    algorithms=["flood_fill", "voxel_regions", "normal_idw"],
+                    recompute=True,
+                    options=backend_options,
+                ))
+
+                # Add constraints to project
+                constraint_service = ConstraintService()
+                for gc in backend_result.generated_constraints:
+                    constraint_service.add_from_dict(project_id, gc.constraint)
+
+                # Sample with inverse_square
+                sampling_service = SamplingService()
+                request = SampleGenerationRequest(
+                    total_samples=5000,
+                    strategy=SamplingStrategy.INVERSE_SQUARE,
+                    seed=42,
+                )
+                backend_sample_result = sampling_service.generate(project_id, request)
+                backend_samples = backend_sample_result.samples
+            finally:
+                backend_config.settings = original_settings
+
+        # Compare results
+        print(f"\nInverse square pipeline comparison:")
+        print(f"  Standalone constraints: {len(standalone_result.constraints)}")
+        print(f"  Backend constraints: {len(backend_result.generated_constraints)}")
+        print(f"  Standalone samples: {len(standalone_samples)}")
+        print(f"  Backend samples: {len(backend_samples)}")
+
+        # Verify phi distribution is similar (more samples near 0)
+        standalone_near_surface = sum(1 for s in standalone_samples if abs(s.phi) < 0.1)
+        backend_near_surface = sum(1 for s in backend_samples if abs(s.phi) < 0.1)
+
+        print(f"  Standalone near-surface (|phi|<0.1): {standalone_near_surface}")
+        print(f"  Backend near-surface (|phi|<0.1): {backend_near_surface}")
+
+        # Both should have majority of samples near surface (inverse_square characteristic)
+        standalone_ratio = standalone_near_surface / len(standalone_samples) if standalone_samples else 0
+        backend_ratio = backend_near_surface / len(backend_samples) if backend_samples else 0
+
+        assert standalone_ratio > 0.3, f"Standalone should have >30% near-surface, got {standalone_ratio:.1%}"
+        assert backend_ratio > 0.3, f"Backend should have >30% near-surface, got {backend_ratio:.1%}"
+
+        # Ratios should be similar
+        if standalone_ratio > 0 and backend_ratio > 0:
+            ratio_diff = abs(standalone_ratio - backend_ratio)
+            assert ratio_diff < 0.2, (
+                f"Near-surface ratio difference too high: {ratio_diff:.1%} "
+                f"(standalone={standalone_ratio:.1%}, backend={backend_ratio:.1%})"
+            )
