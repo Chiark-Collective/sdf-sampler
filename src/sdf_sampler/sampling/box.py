@@ -80,17 +80,18 @@ def sample_box_inverse_square(
     """Generate samples from a box with inverse-square density distribution.
 
     Samples more points near the surface (point cloud) and fewer far away.
+    Uses actual distance to surface for phi values (signed distance).
 
     Args:
         constraint: Box constraint to sample
         rng: Random number generator
-        near_band: Near-band width for offset
+        near_band: Near-band width for density weighting (not phi assignment)
         n_samples: Number of samples to generate
         surface_tree: KDTree of surface points for distance computation
         falloff: Falloff exponent (higher = faster falloff)
 
     Returns:
-        List of TrainingSample objects
+        List of TrainingSample objects with phi = actual signed distance to surface
     """
     samples = []
     center = np.array(constraint.center)
@@ -109,8 +110,11 @@ def sample_box_inverse_square(
         weight = (near_band / min_dist) ** falloff
 
         if rng.random() < min(1.0, weight):
-            offset = near_band if constraint.sign == SignConvention.EMPTY else -near_band
-            phi = offset
+            # Use actual distance to surface for phi, with sign based on constraint type
+            # EMPTY regions have positive phi (outside surface)
+            # SOLID regions have negative phi (inside surface)
+            sign = 1.0 if constraint.sign == SignConvention.EMPTY else -1.0
+            phi = sign * float(dist_to_surface)
 
             samples.append(
                 TrainingSample(

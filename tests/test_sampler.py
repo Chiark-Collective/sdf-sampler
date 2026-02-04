@@ -229,3 +229,161 @@ class TestSamplerSignConvention:
         for s in samples:
             assert s.phi > 0, f"EMPTY sample should have positive phi, got {s.phi}"
             assert s.is_free
+
+
+class TestBoxInverseSquarePhiValues:
+    """Tests that box inverse_square samples use actual distance to surface for phi."""
+
+    @pytest.fixture
+    def plane_surface(self):
+        """Flat plane at z=0 for easy distance calculation."""
+        x = np.linspace(-2, 2, 50)
+        y = np.linspace(-2, 2, 50)
+        xx, yy = np.meshgrid(x, y)
+        xyz = np.column_stack([xx.ravel(), yy.ravel(), np.zeros(2500)])
+        return xyz
+
+    @pytest.fixture
+    def box_above_plane(self):
+        """Box constraint above z=0 plane (empty region above surface)."""
+        return {
+            "type": "box",
+            "sign": "empty",  # Above surface = empty/positive phi
+            "center": (0.0, 0.0, 0.5),  # Center at z=0.5
+            "half_extents": (1.0, 1.0, 0.5),  # Extends from z=0 to z=1
+            "weight": 1.0,
+        }
+
+    @pytest.fixture
+    def box_below_plane(self):
+        """Box constraint below z=0 plane (solid region below surface)."""
+        return {
+            "type": "box",
+            "sign": "solid",  # Below surface = solid/negative phi
+            "center": (0.0, 0.0, -0.5),  # Center at z=-0.5
+            "half_extents": (1.0, 1.0, 0.5),  # Extends from z=-1 to z=0
+            "weight": 1.0,
+        }
+
+    def test_inverse_square_phi_is_actual_distance(self, plane_surface, box_above_plane):
+        """Verify phi is based on distance to nearest surface point, not constant near_band."""
+        sampler = SDFSampler(config=SamplerConfig(total_samples=500))
+        samples = sampler.generate(
+            xyz=plane_surface,
+            constraints=[box_above_plane],
+            strategy=SamplingStrategy.INVERSE_SQUARE,
+            seed=42,
+        )
+
+        assert len(samples) > 0, "Should generate samples"
+
+        for s in samples:
+            # For a flat plane at z=0, distance to surface is approximately |z|
+            # (exact value depends on nearest point in the discrete point cloud)
+            z_distance = abs(s.z)
+
+            # phi should be approximately |z| (within grid spacing tolerance)
+            # Grid spacing is ~0.08 units, so allow some tolerance
+            assert abs(s.phi - z_distance) < 0.1, (
+                f"phi should be approximately equal to |z| distance. "
+                f"Got phi={s.phi}, z={s.z}, expected ~{z_distance}"
+            )
+
+            # phi should definitely be positive for empty constraint
+            assert s.phi > 0, f"EMPTY sample should have positive phi, got {s.phi}"
+
+    def test_inverse_square_phi_varies_with_distance(self, plane_surface, box_above_plane):
+        """Verify phi values vary based on sample distance from surface."""
+        sampler = SDFSampler(config=SamplerConfig(total_samples=500))
+        samples = sampler.generate(
+            xyz=plane_surface,
+            constraints=[box_above_plane],
+            strategy=SamplingStrategy.INVERSE_SQUARE,
+            seed=42,
+        )
+
+        phi_values = [s.phi for s in samples]
+
+        # Phi should vary (not be constant ±near_band)
+        phi_std = np.std(phi_values)
+        assert phi_std > 0.01, (
+            f"phi values should vary with distance, got std={phi_std}. "
+            "This suggests phi is constant (bug: using near_band instead of distance)"
+        )
+
+        # Should have a range of values, not just near_band=0.02
+        phi_min, phi_max = min(phi_values), max(phi_values)
+        phi_range = phi_max - phi_min
+        assert phi_range > 0.1, (
+            f"phi range should be > 0.1, got {phi_range}. "
+            "Values: min={phi_min}, max={phi_max}"
+        )
+
+    def test_inverse_square_solid_has_negative_phi(self, plane_surface, box_below_plane):
+        """Verify solid box samples have negative phi with magnitude proportional to distance."""
+        sampler = SDFSampler(config=SamplerConfig(total_samples=500))
+        samples = sampler.generate(
+            xyz=plane_surface,
+            constraints=[box_below_plane],
+            strategy=SamplingStrategy.INVERSE_SQUARE,
+            seed=42,
+        )
+
+        for s in samples:
+            # SOLID constraint should always have negative phi
+            assert s.phi < 0, f"SOLID sample should have negative phi, got {s.phi}"
+
+            # For flat plane at z=0, solid samples are at z<0
+            # Distance to nearest surface point is approximately |z|
+            z_distance = abs(s.z)
+
+            # phi magnitude should be approximately |z| (within grid spacing tolerance)
+            assert abs(abs(s.phi) - z_distance) < 0.1, (
+                f"phi magnitude should be approximately |z|. "
+                f"Got phi={s.phi}, z={s.z}, expected ~{-z_distance}"
+            )
+
+    def test_inverse_square_phi_correlates_with_z_coordinate(self, plane_surface, box_above_plane):
+        """For plane at z=0, phi should be correlated with |z| coordinate."""
+        sampler = SDFSampler(config=SamplerConfig(total_samples=200))
+        samples = sampler.generate(
+            xyz=plane_surface,
+            constraints=[box_above_plane],
+            strategy=SamplingStrategy.INVERSE_SQUARE,
+            seed=123,
+        )
+
+        # Collect z values and phi values
+        z_values = np.array([abs(s.z) for s in samples])
+        phi_values = np.array([s.phi for s in samples])
+
+        # phi should be positively correlated with |z|
+        # (samples further from z=0 should have larger phi)
+        correlation = np.corrcoef(z_values, phi_values)[0, 1]
+        assert correlation > 0.9, (
+            f"phi should be strongly correlated with |z|. "
+            f"Got correlation={correlation:.3f}"
+        )
+
+    def test_inverse_square_not_constant_near_band(self, plane_surface, box_above_plane):
+        """Explicitly verify phi is NOT the constant near_band value."""
+        near_band = 0.02  # Default near_band value
+        sampler = SDFSampler(config=SamplerConfig(total_samples=200, near_band=near_band))
+        samples = sampler.generate(
+            xyz=plane_surface,
+            constraints=[box_above_plane],
+            strategy=SamplingStrategy.INVERSE_SQUARE,
+            seed=42,
+        )
+
+        # Count how many samples have phi approximately equal to near_band
+        near_band_count = sum(1 for s in samples if abs(abs(s.phi) - near_band) < 0.001)
+        total = len(samples)
+
+        # With actual distance-based phi, very few samples should be exactly at near_band
+        # (only those that happen to be exactly 0.02 away from surface)
+        ratio = near_band_count / total
+        assert ratio < 0.1, (
+            f"{near_band_count}/{total} ({ratio:.0%}) samples have phi≈±near_band. "
+            "This suggests phi is still using constant near_band instead of actual distance."
+        )
