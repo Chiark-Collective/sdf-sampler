@@ -18,6 +18,15 @@ def generate_idw_normal_samples(
     Creates point samples at varying distances along surface normals, with
     more samples concentrated near the surface (IDW = 1/distance^power).
 
+    For outdoor scenes (aerial/lidar capture), uses the global floor heuristic:
+    - The lowest scanned surface defines the "floor"
+    - SOLID samples are only generated below the floor level
+    - Samples at or above the floor are marked EMPTY (reachable from sky)
+
+    This prevents incorrect SOLID labeling inside open voids like trenches,
+    where the normal direction from embedded objects (pipes) would otherwise
+    point into the void.
+
     Args:
         xyz: Point cloud positions (N, 3)
         normals: Point normals (N, 3) - required for this algorithm
@@ -32,6 +41,10 @@ def generate_idw_normal_samples(
         return constraints
 
     oriented_normals = _orient_normals_outward(xyz, normals)
+
+    # Global floor heuristic: the lowest scanned surface is the floor.
+    # SOLID samples should only exist below this level.
+    global_floor = float(xyz[:, 2].min())
 
     n_surface_pts = min(options.idw_sample_count // 10, len(xyz))
     if n_surface_pts < 1:
@@ -60,7 +73,18 @@ def generate_idw_normal_samples(
         for dist in distances:
             sign = rng.choice([-1, 1])
             sample_pos = point + sign * dist * normal
-            sample_sign = "empty" if sign > 0 else "solid"
+
+            # Apply global floor heuristic:
+            # - If sample is at or above the global floor, mark as EMPTY
+            # - Only mark as SOLID if sample is below the floor
+            if sample_pos[2] >= global_floor:
+                sample_sign = "empty"
+                # Adjust signed distance: positive for EMPTY
+                signed_dist = abs(dist)
+            else:
+                sample_sign = "solid"
+                # Negative signed distance for SOLID
+                signed_dist = -abs(dist)
 
             constraints.append(
                 GeneratedConstraint(
@@ -68,11 +92,11 @@ def generate_idw_normal_samples(
                         "type": "sample_point",
                         "sign": sample_sign,
                         "position": tuple(sample_pos.tolist()),
-                        "distance": float(sign * dist),
+                        "distance": float(signed_dist),
                     },
                     algorithm=AlgorithmType.NORMAL_IDW,
                     confidence=0.8,
-                    description=f"IDW sample at d={sign * dist:.3f}m",
+                    description=f"IDW sample at d={signed_dist:.3f}m",
                 )
             )
 

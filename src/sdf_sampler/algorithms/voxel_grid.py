@@ -242,23 +242,29 @@ def ray_propagation_with_bounces(
         (0, 0, -1),
     ]
 
-    # Compute per-column floor
-    column_floor = np.full((nx, ny), -1, dtype=int)
+    # Compute global floor as the minimum z with any occupied voxel across
+    # all columns. This handles embedded objects (e.g., pipe inside trench)
+    # correctly - the floor is the actual floor, not the bottom of the object.
+    # This is the robust z-heuristic: EMPTY floods down from sky until hitting
+    # the lowest scanned surface.
+    global_floor = nz  # Default: no floor constraint
     for ix in range(nx):
         for iy in range(ny):
             occupied_z = np.where(occupied[ix, iy, :])[0]
             if len(occupied_z) > 0:
-                column_floor[ix, iy] = occupied_z.min()
+                col_floor = occupied_z.min()
+                if col_floor < global_floor:
+                    global_floor = col_floor
 
-    # Flood fill EMPTY
+    # Flood fill EMPTY from ray seeds, stopping at global floor
     empty_stack = [tuple(coord) for coord in np.argwhere(empty)]
     while empty_stack:
         ix, iy, iz = empty_stack.pop()
         for dx, dy, dz in directions:
             nx_, ny_, nz_ = ix + dx, iy + dy, iz + dz
             if 0 <= nx_ < nx and 0 <= ny_ < ny and 0 <= nz_ < nz:
-                floor_z = column_floor[nx_, ny_]
-                if floor_z >= 0 and nz_ < floor_z:
+                # Don't flood below the global floor level
+                if nz_ < global_floor:
                     continue
                 if not occupied[nx_, ny_, nz_] and not empty[nx_, ny_, nz_]:
                     empty[nx_, ny_, nz_] = True
@@ -297,6 +303,10 @@ def ray_propagation_with_bounces(
                 ):
                     solid[nx_, ny_, nz_] = True
                     solid_stack.append((nx_, ny_, nz_))
+
+    # Ensure EMPTY has priority - clear any overlap where SOLID rays
+    # reached voxels before EMPTY flood fill did
+    solid = solid & ~empty
 
     return empty, solid
 
