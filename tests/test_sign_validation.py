@@ -124,8 +124,8 @@ class TestSignValidationUnit:
         assert result[0].constraint["distance"] == 0.5
         assert stats["n_flipped"] == 0
 
-    def test_wrong_sign_below_ground_gets_flipped_to_solid(self):
-        """A constraint in non-empty space below ground should be SOLID."""
+    def test_wrong_sign_in_solid_voxel_gets_flipped_to_solid(self):
+        """A constraint in a solid voxel should be flipped to SOLID."""
         rng = np.random.default_rng(42)
         n = 500
         x = rng.uniform(-1, 1, n)
@@ -143,9 +143,20 @@ class TestSignValidationUnit:
         options = AutoAnalysisOptions.from_analyzer_config(analyzer.config)
         analyzer._run_algorithm("flood_fill", xyz, None, options)
 
-        # A point well below the surface, mislabeled as EMPTY
+        state = analyzer._flood_fill_state
+        assert state is not None
+
+        # Find a voxel that is marked as solid
+        solid_indices = np.argwhere(state.solid_mask)
+        assert len(solid_indices) > 0, "No solid voxels found in plane test"
+
+        # Pick the first solid voxel and build a position from it
+        sv = solid_indices[0]
+        solid_pos = state.bbox_min + (sv + 0.5) * state.voxel_size
+
+        # Create a constraint at that position but mislabeled as EMPTY
         constraint = _make_sample_point_constraint(
-            position=(0.0, 0.0, -0.5),
+            position=tuple(solid_pos.tolist()),
             sign="empty",
             distance=0.5,
         )
@@ -156,6 +167,50 @@ class TestSignValidationUnit:
         assert validated.constraint["sign"] == "solid"
         assert validated.constraint["distance"] < 0
         assert stats["n_flipped"] >= 1
+
+    def test_unclassified_voxel_preserves_original_sign(self):
+        """A constraint in an unclassified voxel should keep its original sign."""
+        rng = np.random.default_rng(42)
+        n = 500
+        x = rng.uniform(-1, 1, n)
+        y = rng.uniform(-1, 1, n)
+        z = np.zeros(n)
+        xyz = np.column_stack([x, y, z])
+
+        analyzer = SDFAnalyzer(config=AnalyzerConfig(
+            flood_fill_output="samples",
+            flood_fill_sample_count=10,
+            validate_signs=True,
+        ))
+
+        from sdf_sampler.config import AutoAnalysisOptions
+        options = AutoAnalysisOptions.from_analyzer_config(analyzer.config)
+        analyzer._run_algorithm("flood_fill", xyz, None, options)
+
+        state = analyzer._flood_fill_state
+        assert state is not None
+
+        # Find a voxel that is occupied (neither empty nor solid)
+        occupied_but_not_classified = (
+            state.occupied & ~state.empty_mask & ~state.solid_mask
+        )
+        occ_indices = np.argwhere(occupied_but_not_classified)
+        if len(occ_indices) == 0:
+            pytest.skip("No unclassified occupied voxels in test case")
+
+        occ_pos = state.bbox_min + (occ_indices[0] + 0.5) * state.voxel_size
+
+        # This constraint should NOT be flipped regardless of sign
+        constraint = _make_sample_point_constraint(
+            position=tuple(occ_pos.tolist()),
+            sign="solid",
+            distance=-0.1,
+        )
+
+        result, stats = analyzer._validate_constraint_signs([constraint])
+        assert len(result) == 1
+        assert result[0].constraint["sign"] == "solid"
+        assert stats["n_flipped"] == 0
 
     def test_box_constraints_validated_by_center(self):
         """Box constraints should be validated using their center position."""
@@ -276,18 +331,15 @@ class TestSignValidationIntegration:
         )
 
         assert result.summary.total_constraints > 0
-        # All empty constraints should be above or at z=0 (the surface)
+
+        # Constraints from flood_fill should all be EMPTY (it detects empty regions)
         for gc in result.generated_constraints:
             c = gc.constraint
-            if c.get("type") == "sample_point" and c.get("sign") == "empty":
-                pos = c.get("position")
-                if pos is not None:
-                    # EMPTY samples should generally be above the surface
-                    # (allow some tolerance for voxel discretization)
-                    assert pos[2] >= -0.2, (
-                        f"EMPTY sample at z={pos[2]:.3f} is too far below "
-                        f"the surface (algorithm: {gc.algorithm})"
-                    )
+            if gc.algorithm.value == "flood_fill" and c.get("type") == "sample_point":
+                assert c.get("sign") == "empty", (
+                    f"Flood fill should only produce EMPTY constraints, "
+                    f"got {c.get('sign')} at {c.get('position')}"
+                )
 
     def test_analyze_with_validation_disabled(self):
         """Full analyze() run with validate_signs=False should skip validation."""

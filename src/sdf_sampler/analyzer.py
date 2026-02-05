@@ -376,18 +376,20 @@ class SDFAnalyzer:
             else:
                 iz = int(voxel_idx[2])
                 in_empty_voxel = bool(state.empty_mask[ix, iy, iz])
+                in_solid_voxel = bool(state.solid_mask[ix, iy, iz])
 
-                # Determine expected sign from voxel classification
+                # Determine expected sign from voxel classification.
+                # Only flip when we have positive evidence from the flood fill.
+                # Unclassified voxels (neither empty nor solid) are left unchanged
+                # since we can't determine their region with confidence.
                 if in_empty_voxel:
                     expected_sign = SignConvention.EMPTY.value
-                elif pos[2] < state.ground_level:
+                elif in_solid_voxel:
                     expected_sign = SignConvention.SOLID.value
                 else:
-                    # Above ground but not in an empty voxel: could be near the
-                    # surface or in a region flood fill didn't reach. Default to
-                    # EMPTY since above-ground non-occupied space is generally
-                    # free space.
-                    expected_sign = SignConvention.EMPTY.value
+                    # Unclassified voxel (occupied or unvisited by flood fill).
+                    # Don't flip — preserve the original algorithm's decision.
+                    expected_sign = current_sign
 
             if current_sign != expected_sign:
                 # Flip the constraint
