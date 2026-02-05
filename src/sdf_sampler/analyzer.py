@@ -369,26 +369,28 @@ class SDFAnalyzer:
             # Handle Z out-of-bounds: above grid top → EMPTY, below grid bottom → SOLID
             if voxel_idx[2] >= nz:
                 in_empty_voxel = True
+                in_solid_voxel = False
                 expected_sign = SignConvention.EMPTY.value
             elif voxel_idx[2] < 0:
                 in_empty_voxel = False
+                in_solid_voxel = True
                 expected_sign = SignConvention.SOLID.value
             else:
                 iz = int(voxel_idx[2])
                 in_empty_voxel = bool(state.empty_mask[ix, iy, iz])
                 in_solid_voxel = bool(state.solid_mask[ix, iy, iz])
 
-                # Determine expected sign from voxel classification.
-                # Only flip when we have positive evidence from the flood fill.
-                # Unclassified voxels (neither empty nor solid) are left unchanged
-                # since we can't determine their region with confidence.
-                if in_empty_voxel:
-                    expected_sign = SignConvention.EMPTY.value
-                elif in_solid_voxel:
+                # Only use the SOLID mask for sign validation. The solid mask
+                # has high precision (upward rays from underground stop at the
+                # first occupied voxel). The empty mask has lower precision
+                # because downward rays plus flood fill can leak through gaps
+                # in the surface, producing false EMPTY voxels underground.
+                if in_solid_voxel:
                     expected_sign = SignConvention.SOLID.value
                 else:
-                    # Unclassified voxel (occupied or unvisited by flood fill).
                     # Don't flip — preserve the original algorithm's decision.
+                    # The empty mask is too unreliable for overriding other
+                    # algorithms' sign decisions.
                     expected_sign = current_sign
 
             if current_sign != expected_sign:

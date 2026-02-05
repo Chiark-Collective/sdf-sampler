@@ -53,9 +53,8 @@ def _make_box_constraint(
 class TestSignValidationUnit:
     """Unit tests for _validate_constraint_signs() using synthetic voxel state."""
 
-    def test_wrong_sign_in_empty_voxel_gets_flipped(self):
-        """A SOLID constraint in a flood-fill EMPTY voxel should be flipped to EMPTY."""
-        # Build a simple plane point cloud (z=0 surface)
+    def test_constraint_above_grid_gets_flipped_to_empty(self):
+        """A SOLID constraint above the grid top should be flipped to EMPTY."""
         rng = np.random.default_rng(42)
         n = 500
         x = rng.uniform(-1, 1, n)
@@ -69,32 +68,29 @@ class TestSignValidationUnit:
             validate_signs=True,
         ))
 
-        # Run flood_fill to populate voxel state
         from sdf_sampler.config import AutoAnalysisOptions
         options = AutoAnalysisOptions.from_analyzer_config(analyzer.config)
         analyzer._run_algorithm("flood_fill", xyz, None, options)
 
-        # The analyzer should now have flood fill state cached
         assert analyzer._flood_fill_state is not None
 
-        # Create a constraint above the plane (in empty space) but mislabeled SOLID
+        # Position well above the grid (z=5.0 is above any plane at z=0)
         constraint = _make_sample_point_constraint(
-            position=(0.0, 0.0, 0.5),
+            position=(0.0, 0.0, 5.0),
             sign="solid",
-            distance=-0.5,
+            distance=-5.0,
         )
 
         result, stats = analyzer._validate_constraint_signs([constraint])
         assert len(result) == 1
 
         validated = result[0]
-        # Should be flipped to EMPTY
         assert validated.constraint["sign"] == "empty"
         assert validated.constraint["distance"] > 0
         assert stats["n_flipped"] >= 1
 
-    def test_correct_sign_in_empty_voxel_unchanged(self):
-        """An EMPTY constraint in a flood-fill EMPTY voxel should remain unchanged."""
+    def test_constraint_below_grid_gets_flipped_to_solid(self):
+        """An EMPTY constraint below the grid bottom should be flipped to SOLID."""
         rng = np.random.default_rng(42)
         n = 500
         x = rng.uniform(-1, 1, n)
@@ -112,17 +108,20 @@ class TestSignValidationUnit:
         options = AutoAnalysisOptions.from_analyzer_config(analyzer.config)
         analyzer._run_algorithm("flood_fill", xyz, None, options)
 
+        assert analyzer._flood_fill_state is not None
+
+        # Position well below the grid
         constraint = _make_sample_point_constraint(
-            position=(0.0, 0.0, 0.5),
+            position=(0.0, 0.0, -5.0),
             sign="empty",
-            distance=0.5,
+            distance=5.0,
         )
 
         result, stats = analyzer._validate_constraint_signs([constraint])
         assert len(result) == 1
-        assert result[0].constraint["sign"] == "empty"
-        assert result[0].constraint["distance"] == 0.5
-        assert stats["n_flipped"] == 0
+        assert result[0].constraint["sign"] == "solid"
+        assert result[0].constraint["distance"] < 0
+        assert stats["n_flipped"] >= 1
 
     def test_wrong_sign_in_solid_voxel_gets_flipped_to_solid(self):
         """A constraint in a solid voxel should be flipped to SOLID."""
@@ -212,8 +211,8 @@ class TestSignValidationUnit:
         assert result[0].constraint["sign"] == "solid"
         assert stats["n_flipped"] == 0
 
-    def test_box_constraints_validated_by_center(self):
-        """Box constraints should be validated using their center position."""
+    def test_box_constraints_in_solid_voxel_gets_flipped(self):
+        """Box constraints centered in solid voxels should be flipped to SOLID."""
         rng = np.random.default_rng(42)
         n = 500
         x = rng.uniform(-1, 1, n)
@@ -231,16 +230,25 @@ class TestSignValidationUnit:
         options = AutoAnalysisOptions.from_analyzer_config(analyzer.config)
         analyzer._run_algorithm("flood_fill", xyz, None, options)
 
-        # Box centered above the plane (in empty space) but mislabeled SOLID
+        state = analyzer._flood_fill_state
+        assert state is not None
+
+        # Find a solid voxel to place the box
+        solid_indices = np.argwhere(state.solid_mask)
+        assert len(solid_indices) > 0
+        sv = solid_indices[0]
+        solid_pos = state.bbox_min + (sv + 0.5) * state.voxel_size
+
+        # Box centered in solid space but mislabeled EMPTY
         constraint = _make_box_constraint(
-            center=(0.0, 0.0, 0.5),
-            half_extents=(0.1, 0.1, 0.1),
-            sign="solid",
+            center=tuple(solid_pos.tolist()),
+            half_extents=(0.01, 0.01, 0.01),
+            sign="empty",
         )
 
         result, stats = analyzer._validate_constraint_signs([constraint])
         assert len(result) == 1
-        assert result[0].constraint["sign"] == "empty"
+        assert result[0].constraint["sign"] == "solid"
 
     def test_no_state_skips_validation(self):
         """If no flood_fill state is cached, validation should pass through unchanged."""
