@@ -5,6 +5,23 @@ All notable changes to sdf-sampler will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.8.0] - 2026-02-05
+
+### Added
+
+- **KNN vote-agreement sign validation** (`252c7b9`) - Post-processing validator uses K=8 nearest surface normals to verify/correct signs from all algorithms. Only flips when ≥7/8 neighbors agree, preserving correct concavity signs while fixing leaked flood_fill classifications. Improves accuracy from 58-92% to 65-99.5% across trenchfoot scenarios.
+- **KNN normal voting for IDW** (`c5e63b3`) - IDW sign classification now uses KNN voting instead of random side selection with heuristic correction. 100% accuracy on simple geometries (S01).
+- **Scored KNN classifier** - `_classify_sign_knn_scored()` returns both sign and confidence score for downstream filtering.
+
+### Changed
+
+- **Sign validation uses KNN + solid_mask** (`2dae8dc`) - Replaced unreliable empty_mask-based validation with high-precision solid_mask + KNN hybrid approach.
+- **Flat plane viewpoint fix** - `_orient_normals_outward()` now handles zero Z-range (flat planes) by ensuring viewpoint is at least 1.0m above surface.
+
+### Fixed
+
+- Sign accuracy degradation from voxel-based IDW classification reverted (`846f6c2`).
+
 ## [0.5.0] - 2025-01-30
 
 ### Added
