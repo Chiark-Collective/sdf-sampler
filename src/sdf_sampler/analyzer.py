@@ -180,7 +180,9 @@ class SDFAnalyzer:
         elif name == AlgorithmType.VOXEL_REGIONS.value:
             return generate_voxel_region_constraints(xyz, normals, options)
         elif name == AlgorithmType.NORMAL_IDW.value:
-            return generate_idw_normal_samples(xyz, normals, options)
+            return generate_idw_normal_samples(
+                xyz, normals, options, flood_fill_state=self._flood_fill_state
+            )
         return []
 
     def _get_algorithm_description(self, algo_name: str, count: int) -> str:
