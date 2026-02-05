@@ -101,17 +101,6 @@ class SDFAnalyzer:
         algo_list = algorithms if algorithms else [a.value for a in DEFAULT_ALGORITHMS]
         algo_list = [a for a in algo_list if a in [alg.value for alg in ALL_ALGORITHMS]]
 
-        # Ensure flood_fill runs before normal_idw so the voxel state is
-        # available for sign classification in IDW sampling
-        ff = AlgorithmType.FLOOD_FILL.value
-        idw = AlgorithmType.NORMAL_IDW.value
-        if ff in algo_list and idw in algo_list:
-            ff_idx = algo_list.index(ff)
-            idw_idx = algo_list.index(idw)
-            if ff_idx > idw_idx:
-                algo_list.remove(ff)
-                algo_list.insert(idw_idx, ff)
-
         # Run algorithms and collect constraints
         all_constraints: list[GeneratedConstraint] = []
         algorithm_stats: dict[str, AlgorithmStats] = {}
@@ -191,9 +180,7 @@ class SDFAnalyzer:
         elif name == AlgorithmType.VOXEL_REGIONS.value:
             return generate_voxel_region_constraints(xyz, normals, options)
         elif name == AlgorithmType.NORMAL_IDW.value:
-            return generate_idw_normal_samples(
-                xyz, normals, options, flood_fill_state=self._flood_fill_state
-            )
+            return generate_idw_normal_samples(xyz, normals, options)
         return []
 
     def _get_algorithm_description(self, algo_name: str, count: int) -> str:
