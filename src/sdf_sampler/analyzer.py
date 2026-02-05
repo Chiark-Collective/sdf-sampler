@@ -8,7 +8,10 @@ from datetime import UTC, datetime
 import numpy as np
 
 from sdf_sampler.algorithms.flood_fill import FloodFillState, flood_fill_empty_regions
-from sdf_sampler.algorithms.normal_idw import generate_idw_normal_samples
+from sdf_sampler.algorithms.normal_idw import (
+    _orient_normals_outward,
+    generate_idw_normal_samples,
+)
 from sdf_sampler.algorithms.normal_offset import generate_normal_offset_boxes
 from sdf_sampler.algorithms.pocket import detect_pockets
 from sdf_sampler.algorithms.voxel_regions import generate_voxel_region_constraints
@@ -123,9 +126,11 @@ class SDFAnalyzer:
         if options.hull_filter_enabled:
             all_constraints = self._filter_outside_hull(all_constraints, xyz, options.hull_alpha)
 
-        # Validate constraint signs using flood_fill voxel classification
+        # Validate constraint signs using KNN normal voting + voxel classification
         if self.config.validate_signs and self._flood_fill_state is not None:
-            all_constraints, validation_stats = self._validate_constraint_signs(all_constraints)
+            all_constraints, validation_stats = self._validate_constraint_signs(
+                all_constraints, xyz=xyz, normals=normals
+            )
             if validation_stats["n_flipped"] > 0:
                 logger.info(
                     "Sign validation: checked %d constraints, flipped %d signs",
@@ -322,17 +327,23 @@ class SDFAnalyzer:
     def _validate_constraint_signs(
         self,
         constraints: list[GeneratedConstraint],
+        xyz: np.ndarray | None = None,
+        normals: np.ndarray | None = None,
     ) -> tuple[list[GeneratedConstraint], dict[str, int]]:
-        """Validate and correct constraint signs using flood_fill voxel classification.
+        """Validate and correct constraint signs using KNN normal voting + voxel classification.
 
-        Uses the cached flood_fill state (empty_mask, ground_level) to verify that
-        each constraint's sign matches the voxel classification at its position:
-        - Position in EMPTY voxel → sign should be EMPTY (positive phi)
-        - Position not in EMPTY voxel and below ground → sign should be SOLID (negative phi)
-        - Position above ground and not in EMPTY voxel → sign should be EMPTY (positive phi)
+        When surface normals are available, uses KNN-based sign classification:
+        for each constraint position, the K nearest surface points vote on
+        inside/outside based on their oriented normals. This catches errors
+        from flood_fill's leaky empty_mask.
+
+        When normals are not available, falls back to voxel-only validation
+        using the solid_mask (high precision, low recall).
 
         Args:
             constraints: List of constraints to validate
+            xyz: Point cloud positions (N, 3) for KNN validation
+            normals: Point normals (N, 3) for KNN validation
 
         Returns:
             Tuple of (corrected constraints, validation stats dict)
@@ -343,6 +354,23 @@ class SDFAnalyzer:
             return constraints, stats
 
         state = self._flood_fill_state
+
+        # Build KNN infrastructure when normals are available
+        use_knn = (
+            xyz is not None
+            and normals is not None
+            and len(normals) == len(xyz)
+            and len(xyz) >= 3
+        )
+        knn_tree = None
+        oriented_normals = None
+        knn_k = 8
+        if use_knn:
+            from scipy.spatial import KDTree
+            oriented_normals = _orient_normals_outward(xyz, normals)
+            knn_tree = KDTree(xyz)
+            knn_k = min(8, len(xyz))
+
         validated: list[GeneratedConstraint] = []
 
         for gc in constraints:
@@ -365,34 +393,34 @@ class SDFAnalyzer:
                 validated.append(gc)
                 continue
 
-            ix, iy = int(voxel_idx[0]), int(voxel_idx[1])
             current_sign = gc.constraint.get("sign")
 
             # Handle Z out-of-bounds: above grid top → EMPTY, below grid bottom → SOLID
             if voxel_idx[2] >= nz:
-                in_empty_voxel = True
-                in_solid_voxel = False
                 expected_sign = SignConvention.EMPTY.value
             elif voxel_idx[2] < 0:
-                in_empty_voxel = False
-                in_solid_voxel = True
                 expected_sign = SignConvention.SOLID.value
             else:
                 iz = int(voxel_idx[2])
-                in_empty_voxel = bool(state.empty_mask[ix, iy, iz])
+                ix, iy = int(voxel_idx[0]), int(voxel_idx[1])
                 in_solid_voxel = bool(state.solid_mask[ix, iy, iz])
 
-                # Only use the SOLID mask for sign validation. The solid mask
-                # has high precision (upward rays from underground stop at the
-                # first occupied voxel). The empty mask has lower precision
-                # because downward rays plus flood fill can leak through gaps
-                # in the surface, producing false EMPTY voxels underground.
+                # solid_mask has high precision — trust it unconditionally
                 if in_solid_voxel:
                     expected_sign = SignConvention.SOLID.value
+                elif use_knn:
+                    knn_sign, agreement = self._knn_vote_agreement(
+                        pos, xyz, oriented_normals, knn_tree, knn_k
+                    )
+                    # Only flip when vote agreement is strong (≥7/8 = 0.875).
+                    # Concavity votes are split (4-5/8) → preserved; flat/convex
+                    # surface votes are decisive (7-8/8) → corrected.
+                    if agreement >= 0.875:
+                        expected_sign = knn_sign
+                    else:
+                        expected_sign = current_sign
                 else:
-                    # Don't flip — preserve the original algorithm's decision.
-                    # The empty mask is too unreliable for overriding other
-                    # algorithms' sign decisions.
+                    # No KNN available — preserve the original sign
                     expected_sign = current_sign
 
             if current_sign != expected_sign:
@@ -413,16 +441,60 @@ class SDFAnalyzer:
                 stats["n_flipped"] += 1
                 logger.debug(
                     "Flipped sign %s→%s for constraint at (%.2f, %.2f, %.2f) "
-                    "(in_empty=%s, ground=%.2f, algorithm=%s)",
+                    "(knn=%s, algorithm=%s)",
                     current_sign, expected_sign,
                     pos[0], pos[1], pos[2],
-                    in_empty_voxel, state.ground_level,
+                    use_knn,
                     gc.algorithm.value,
                 )
             else:
                 validated.append(gc)
 
         return validated, stats
+
+    @staticmethod
+    def _knn_vote_agreement(
+        sample_pos: np.ndarray,
+        xyz: np.ndarray,
+        oriented_normals: np.ndarray,
+        tree: "KDTree",
+        k: int,
+    ) -> tuple[str, float]:
+        """Classify sign using unweighted KNN vote count and return agreement.
+
+        Unlike the weighted _classify_sign_knn which can be dominated by one
+        close neighbor, this counts each neighbor's vote equally. This makes
+        the agreement metric meaningful: 8/8 = strong consensus (flat surface),
+        5/8 = weak consensus (concavity with opposing normals).
+
+        Returns:
+            Tuple of (sign_str, agreement) where agreement is the fraction
+            of neighbors that voted for the winning sign (0.5 to 1.0).
+        """
+        dists, indices = tree.query(sample_pos, k=k)
+
+        if np.isscalar(dists):
+            dists = np.array([dists])
+            indices = np.array([indices])
+
+        n_empty = 0
+        n_solid = 0
+
+        for idx in indices:
+            to_sample = sample_pos - xyz[idx]
+            dot = np.dot(to_sample, oriented_normals[idx])
+            if dot > 0:
+                n_empty += 1
+            else:
+                n_solid += 1
+
+        total = n_empty + n_solid
+        if total == 0:
+            return "empty", 0.5
+
+        sign = "empty" if n_empty > n_solid else "solid"
+        agreement = max(n_empty, n_solid) / total
+        return sign, agreement
 
     def _get_constraint_position(self, constraint: dict) -> np.ndarray | None:
         """Extract the 3D position of a constraint for sign validation.

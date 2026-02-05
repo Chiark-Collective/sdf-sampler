@@ -118,6 +118,24 @@ def _classify_sign_knn(
     Uses inverse-distance weighting so closer surface points have more
     influence on the vote.
     """
+    sign, _ = _classify_sign_knn_scored(sample_pos, xyz, oriented_normals, tree, k)
+    return sign
+
+
+def _classify_sign_knn_scored(
+    sample_pos: np.ndarray,
+    xyz: np.ndarray,
+    oriented_normals: np.ndarray,
+    tree: KDTree,
+    k: int,
+) -> tuple[str, float]:
+    """Classify a sample point with confidence score.
+
+    Returns:
+        Tuple of (sign_str, avg_score) where avg_score is the inverse-distance-
+        weighted average dot product. Positive = empty, negative = solid.
+        Larger magnitude = higher confidence.
+    """
     dists, indices = tree.query(sample_pos, k=k)
 
     # Handle single-neighbor case
@@ -142,7 +160,8 @@ def _classify_sign_knn(
     else:
         avg_score = 0.0
 
-    return "empty" if avg_score > 0 else "solid"
+    sign = "empty" if avg_score > 0 else "solid"
+    return sign, float(avg_score)
 
 
 def _orient_normals_outward(xyz: np.ndarray, normals: np.ndarray) -> np.ndarray:

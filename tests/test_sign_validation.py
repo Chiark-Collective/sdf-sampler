@@ -1,5 +1,5 @@
-# ABOUTME: Tests for flood-fill based sign validation in the analyzer
-# ABOUTME: Verifies that constraint signs are corrected using voxel classification
+# ABOUTME: Tests for sign validation in the analyzer (voxel + KNN-based)
+# ABOUTME: Verifies that constraint signs are corrected using voxel classification and KNN normal voting
 
 import numpy as np
 import pytest
@@ -313,7 +313,14 @@ class TestSignValidationIntegration:
     """Integration tests for sign validation through the full analyze() pipeline."""
 
     def test_analyze_with_validation_enabled(self):
-        """Full analyze() run with validate_signs=True should produce valid results."""
+        """Full analyze() with validate_signs=True should run without errors.
+
+        Verifies the pipeline works end-to-end and produces constraints.
+        Points well above the surface should be EMPTY. Below-surface points
+        are not strictly checked because for sparse flat planes, the flood
+        fill's empty_mask extends below the surface (rays pass through gaps).
+        Detailed sign correctness is tested by TestKNNSignValidation.
+        """
         rng = np.random.default_rng(42)
         n = 500
         x = rng.uniform(-1, 1, n)
@@ -340,14 +347,16 @@ class TestSignValidationIntegration:
 
         assert result.summary.total_constraints > 0
 
-        # Constraints from flood_fill should all be EMPTY (it detects empty regions)
+        # Points well above the surface should be EMPTY
         for gc in result.generated_constraints:
             c = gc.constraint
-            if gc.algorithm.value == "flood_fill" and c.get("type") == "sample_point":
-                assert c.get("sign") == "empty", (
-                    f"Flood fill should only produce EMPTY constraints, "
-                    f"got {c.get('sign')} at {c.get('position')}"
-                )
+            if c.get("type") == "sample_point":
+                pos = c.get("position")
+                if pos is not None and pos[2] > 0.2:
+                    assert c.get("sign") == "empty", (
+                        f"Point well above surface at z={pos[2]:.3f} should be EMPTY, "
+                        f"got {c.get('sign')}"
+                    )
 
     def test_analyze_with_validation_disabled(self):
         """Full analyze() run with validate_signs=False should skip validation."""
@@ -435,3 +444,165 @@ class TestSignValidationStats:
         _, stats = analyzer._validate_constraint_signs(constraints)
         assert stats["n_checked"] == 2
         assert stats["n_flipped"] >= 1
+
+
+class TestKNNSignValidation:
+    """Tests for KNN-based sign validation using surface normals."""
+
+    def _make_plane_surface(self, n=500, seed=42):
+        """Create a flat plane at z=0 with upward normals."""
+        rng = np.random.default_rng(seed)
+        x = rng.uniform(-1, 1, n)
+        y = rng.uniform(-1, 1, n)
+        z = np.zeros(n)
+        xyz = np.column_stack([x, y, z])
+        normals = np.zeros((n, 3))
+        normals[:, 2] = 1.0
+        return xyz, normals
+
+    def _setup_analyzer_with_flood_fill(self, xyz):
+        """Create analyzer and run flood fill to cache state."""
+        analyzer = SDFAnalyzer(config=AnalyzerConfig(
+            flood_fill_output="samples",
+            flood_fill_sample_count=10,
+            validate_signs=True,
+        ))
+        from sdf_sampler.config import AutoAnalysisOptions
+        options = AutoAnalysisOptions.from_analyzer_config(analyzer.config)
+        analyzer._run_algorithm("flood_fill", xyz, None, options)
+        assert analyzer._flood_fill_state is not None
+        return analyzer
+
+    def test_knn_flips_empty_below_surface(self):
+        """KNN should flip EMPTY constraints below a flat surface to SOLID."""
+        xyz, normals = self._make_plane_surface()
+        analyzer = self._setup_analyzer_with_flood_fill(xyz)
+
+        # Point below the surface plane, wrongly labeled EMPTY.
+        # KNN dot product: (sample - surface_pt) · normal = (0,0,-0.3) · (0,0,1) = -0.3 < 0 → SOLID
+        constraint = _make_sample_point_constraint(
+            position=(0.0, 0.0, -0.05),
+            sign="empty",
+            distance=0.05,
+            algorithm=AlgorithmType.FLOOD_FILL,
+        )
+
+        result, stats = analyzer._validate_constraint_signs(
+            [constraint], xyz=xyz, normals=normals
+        )
+        assert len(result) == 1
+        assert result[0].constraint["sign"] == "solid"
+        assert result[0].constraint["distance"] < 0
+        assert stats["n_flipped"] == 1
+
+    def test_knn_preserves_correct_empty_above_surface(self):
+        """KNN should preserve EMPTY for constraints above a flat surface."""
+        xyz, normals = self._make_plane_surface()
+        analyzer = self._setup_analyzer_with_flood_fill(xyz)
+
+        constraint = _make_sample_point_constraint(
+            position=(0.0, 0.0, 0.3),
+            sign="empty",
+            distance=0.3,
+            algorithm=AlgorithmType.FLOOD_FILL,
+        )
+
+        result, stats = analyzer._validate_constraint_signs(
+            [constraint], xyz=xyz, normals=normals
+        )
+        assert len(result) == 1
+        assert result[0].constraint["sign"] == "empty"
+        assert result[0].constraint["distance"] > 0
+        assert stats["n_flipped"] == 0
+
+    def test_knn_preserves_correct_solid_below_surface(self):
+        """KNN should preserve SOLID for constraints below a flat surface."""
+        xyz, normals = self._make_plane_surface()
+        analyzer = self._setup_analyzer_with_flood_fill(xyz)
+
+        constraint = _make_sample_point_constraint(
+            position=(0.0, 0.0, -0.05),
+            sign="solid",
+            distance=-0.05,
+            algorithm=AlgorithmType.FLOOD_FILL,
+        )
+
+        result, stats = analyzer._validate_constraint_signs(
+            [constraint], xyz=xyz, normals=normals
+        )
+        assert len(result) == 1
+        assert result[0].constraint["sign"] == "solid"
+        assert stats["n_flipped"] == 0
+
+    def test_knn_flips_solid_above_surface(self):
+        """KNN should flip SOLID constraints above a flat surface to EMPTY."""
+        xyz, normals = self._make_plane_surface()
+        analyzer = self._setup_analyzer_with_flood_fill(xyz)
+
+        constraint = _make_sample_point_constraint(
+            position=(0.0, 0.0, 0.3),
+            sign="solid",
+            distance=-0.3,
+            algorithm=AlgorithmType.FLOOD_FILL,
+        )
+
+        result, stats = analyzer._validate_constraint_signs(
+            [constraint], xyz=xyz, normals=normals
+        )
+        assert len(result) == 1
+        assert result[0].constraint["sign"] == "empty"
+        assert result[0].constraint["distance"] > 0
+        assert stats["n_flipped"] == 1
+
+    def test_knn_validation_without_normals_falls_back(self):
+        """Without normals, validation falls back to voxel-only behavior."""
+        xyz, _ = self._make_plane_surface()
+        analyzer = self._setup_analyzer_with_flood_fill(xyz)
+
+        # Without normals, unclassified voxels preserve their sign
+        constraint = _make_sample_point_constraint(
+            position=(0.0, 0.0, -0.05),
+            sign="empty",
+            distance=0.05,
+            algorithm=AlgorithmType.FLOOD_FILL,
+        )
+
+        # No normals passed → falls back to voxel-only
+        result_no_normals, _ = analyzer._validate_constraint_signs(
+            [constraint], xyz=xyz, normals=None
+        )
+        # With normals passed → KNN kicks in
+        _, normals = self._make_plane_surface()
+        result_with_normals, _ = analyzer._validate_constraint_signs(
+            [constraint], xyz=xyz, normals=normals
+        )
+
+        # KNN should be more aggressive at flipping
+        assert result_with_normals[0].constraint["sign"] == "solid"
+
+    def test_knn_validation_batch_mixed_signs(self):
+        """KNN should correctly validate a batch of mixed correct/incorrect constraints."""
+        xyz, normals = self._make_plane_surface()
+        analyzer = self._setup_analyzer_with_flood_fill(xyz)
+
+        constraints = [
+            # Correct: EMPTY above surface
+            _make_sample_point_constraint((0.0, 0.0, 0.3), "empty", 0.3),
+            # Incorrect: EMPTY below surface (should flip to SOLID)
+            _make_sample_point_constraint((0.0, 0.0, -0.05), "empty", 0.05),
+            # Correct: SOLID below surface
+            _make_sample_point_constraint((0.0, 0.0, -0.05), "solid", -0.05),
+            # Incorrect: SOLID above surface (should flip to EMPTY)
+            _make_sample_point_constraint((0.0, 0.0, 0.3), "solid", -0.3),
+        ]
+
+        result, stats = analyzer._validate_constraint_signs(
+            constraints, xyz=xyz, normals=normals
+        )
+        assert len(result) == 4
+        assert result[0].constraint["sign"] == "empty"   # unchanged
+        assert result[1].constraint["sign"] == "solid"    # flipped
+        assert result[2].constraint["sign"] == "solid"    # unchanged
+        assert result[3].constraint["sign"] == "empty"    # flipped
+        assert stats["n_flipped"] == 2
+        assert stats["n_checked"] == 4
