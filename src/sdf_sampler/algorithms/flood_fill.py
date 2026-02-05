@@ -1,6 +1,9 @@
 # ABOUTME: Flood fill algorithm for EMPTY region detection
 # ABOUTME: Uses ray propagation from sky to identify exterior empty space
 
+from dataclasses import dataclass
+from typing import Any
+
 import numpy as np
 from scipy.spatial import KDTree
 
@@ -15,10 +18,47 @@ from sdf_sampler.models.analysis import AlgorithmType, GeneratedConstraint
 from sdf_sampler.models.constraints import SignConvention
 
 
+@dataclass
+class FloodFillState:
+    """Cached voxel grid state from flood fill for sign validation."""
+
+    occupied: np.ndarray
+    empty_mask: np.ndarray
+    solid_mask: np.ndarray
+    bbox_min: np.ndarray
+    voxel_size: float
+    grid_shape: tuple[int, int, int]
+    ground_level: float
+
+
+def _estimate_ground_level(
+    occupied: np.ndarray,
+    bbox_min: np.ndarray,
+    voxel_size: float,
+    grid_shape: tuple[int, int, int],
+) -> float:
+    """Estimate ground level as the Z of the lowest occupied voxel layer with significant coverage.
+
+    Scans upward from the bottom of the grid and returns the Z coordinate of the
+    first layer where occupied voxels cover a meaningful fraction of the XY extent.
+    """
+    nx, ny, nz = grid_shape
+    min_coverage = max(1, (nx * ny) // 100)
+
+    for iz in range(nz):
+        n_occupied = int(occupied[:, :, iz].sum())
+        if n_occupied >= min_coverage:
+            return float(bbox_min[2] + (iz + 0.5) * voxel_size)
+
+    # Fallback: use bottom of the grid
+    return float(bbox_min[2])
+
+
 def flood_fill_empty_regions(
     xyz: np.ndarray,
     normals: np.ndarray | None,
     options: AutoAnalysisOptions,
+    state_out: list[Any] | None = None,
 ) -> list[GeneratedConstraint]:
     """Generate EMPTY constraints using ray propagation with bouncing.
 
@@ -31,6 +71,8 @@ def flood_fill_empty_regions(
         xyz: Point cloud positions (N, 3)
         normals: Point normals (N, 3) or None
         options: Algorithm options
+        state_out: If provided, appends a FloodFillState to this list for
+            downstream sign validation.
 
     Returns:
         List of GeneratedConstraint objects
@@ -46,9 +88,22 @@ def flood_fill_empty_regions(
 
     inside_hull = compute_hull_mask(xyz, bbox_min, voxel_size, grid_shape)
 
-    empty_mask, _ = ray_propagation_with_bounces(
+    empty_mask, solid_mask = ray_propagation_with_bounces(
         occupied, grid_shape, inside_hull, options.cone_angle
     )
+
+    # Cache voxel state for sign validation
+    if state_out is not None:
+        ground_level = _estimate_ground_level(occupied, bbox_min, voxel_size, grid_shape)
+        state_out.append(FloodFillState(
+            occupied=occupied,
+            empty_mask=empty_mask,
+            solid_mask=solid_mask,
+            bbox_min=bbox_min,
+            voxel_size=voxel_size,
+            grid_shape=grid_shape,
+            ground_level=ground_level,
+        ))
 
     output_mode = options.flood_fill_output.lower()
 
@@ -126,6 +181,7 @@ def _generate_samples_from_mask(
                     "sign": sign.value,
                     "position": tuple(world_pos.tolist()),
                     "distance": signed_dist,
+                    "algorithm": algorithm.value,
                 },
                 algorithm=algorithm,
                 confidence=0.8,

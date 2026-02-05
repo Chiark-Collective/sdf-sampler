@@ -600,6 +600,10 @@ class SDFSampler:
         """Convert a sample_point constraint directly to a training sample."""
         phi = constraint.distance
 
+        # Use algorithm name for source label if available, fall back to "idw"
+        algo_name = constraint.algorithm or "idw"
+        source = f"{algo_name}_{constraint.sign.value}"
+
         return [
             TrainingSample(
                 x=float(constraint.position[0]),
@@ -610,7 +614,7 @@ class SDFSampler:
                 ny=0.0,
                 nz=0.0,
                 weight=constraint.weight,
-                source=f"idw_{constraint.sign.value}",
+                source=source,
                 is_surface=constraint.sign == SignConvention.SURFACE,
                 is_free=constraint.sign == SignConvention.EMPTY,
             )

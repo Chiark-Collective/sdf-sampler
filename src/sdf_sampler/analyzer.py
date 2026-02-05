@@ -1,12 +1,13 @@
 # ABOUTME: SDFAnalyzer class for auto-analysis of point clouds
 # ABOUTME: Detects SOLID and EMPTY regions using multiple algorithms
 
+import logging
 import uuid
 from datetime import UTC, datetime
 
 import numpy as np
 
-from sdf_sampler.algorithms.flood_fill import flood_fill_empty_regions
+from sdf_sampler.algorithms.flood_fill import FloodFillState, flood_fill_empty_regions
 from sdf_sampler.algorithms.normal_idw import generate_idw_normal_samples
 from sdf_sampler.algorithms.normal_offset import generate_normal_offset_boxes
 from sdf_sampler.algorithms.pocket import detect_pockets
@@ -22,6 +23,8 @@ from sdf_sampler.models.analysis import (
     GeneratedConstraint,
 )
 from sdf_sampler.models.constraints import SignConvention
+
+logger = logging.getLogger(__name__)
 
 
 class SDFAnalyzer:
@@ -50,6 +53,7 @@ class SDFAnalyzer:
             config: Optional configuration. Uses defaults if not provided.
         """
         self.config = config or AnalyzerConfig()
+        self._flood_fill_state: FloodFillState | None = None
 
     def analyze(
         self,
@@ -119,6 +123,16 @@ class SDFAnalyzer:
         if options.hull_filter_enabled:
             all_constraints = self._filter_outside_hull(all_constraints, xyz, options.hull_alpha)
 
+        # Validate constraint signs using flood_fill voxel classification
+        if self.config.validate_signs and self._flood_fill_state is not None:
+            all_constraints, validation_stats = self._validate_constraint_signs(all_constraints)
+            if validation_stats["n_flipped"] > 0:
+                logger.info(
+                    "Sign validation: checked %d constraints, flipped %d signs",
+                    validation_stats["n_checked"],
+                    validation_stats["n_flipped"],
+                )
+
         # Compute summary
         summary = self._compute_summary(all_constraints, len(algorithm_stats))
 
@@ -158,7 +172,11 @@ class SDFAnalyzer:
         elif name == AlgorithmType.NORMAL_OFFSET.value:
             return generate_normal_offset_boxes(xyz, normals, options)
         elif name == AlgorithmType.FLOOD_FILL.value:
-            return flood_fill_empty_regions(xyz, normals, options)
+            state_out: list[FloodFillState] = []
+            constraints = flood_fill_empty_regions(xyz, normals, options, state_out=state_out)
+            if state_out:
+                self._flood_fill_state = state_out[0]
+            return constraints
         elif name == AlgorithmType.VOXEL_REGIONS.value:
             return generate_voxel_region_constraints(xyz, normals, options)
         elif name == AlgorithmType.NORMAL_IDW.value:
@@ -298,3 +316,134 @@ class SDFAnalyzer:
             return None
 
         return np.array(center[:2])
+
+    def _validate_constraint_signs(
+        self,
+        constraints: list[GeneratedConstraint],
+    ) -> tuple[list[GeneratedConstraint], dict[str, int]]:
+        """Validate and correct constraint signs using flood_fill voxel classification.
+
+        Uses the cached flood_fill state (empty_mask, ground_level) to verify that
+        each constraint's sign matches the voxel classification at its position:
+        - Position in EMPTY voxel → sign should be EMPTY (positive phi)
+        - Position not in EMPTY voxel and below ground → sign should be SOLID (negative phi)
+        - Position above ground and not in EMPTY voxel → sign should be EMPTY (positive phi)
+
+        Args:
+            constraints: List of constraints to validate
+
+        Returns:
+            Tuple of (corrected constraints, validation stats dict)
+        """
+        stats = {"n_checked": 0, "n_flipped": 0}
+
+        if not constraints or self._flood_fill_state is None:
+            return constraints, stats
+
+        state = self._flood_fill_state
+        validated: list[GeneratedConstraint] = []
+
+        for gc in constraints:
+            pos = self._get_constraint_position(gc.constraint)
+            if pos is None:
+                validated.append(gc)
+                continue
+
+            stats["n_checked"] += 1
+
+            # Convert position to voxel indices
+            voxel_idx = ((pos - state.bbox_min) / state.voxel_size).astype(int)
+            nx, ny, nz = state.grid_shape
+
+            # Check XY bounds — skip validation for points outside XY footprint
+            if (
+                voxel_idx[0] < 0 or voxel_idx[0] >= nx
+                or voxel_idx[1] < 0 or voxel_idx[1] >= ny
+            ):
+                validated.append(gc)
+                continue
+
+            ix, iy = int(voxel_idx[0]), int(voxel_idx[1])
+            current_sign = gc.constraint.get("sign")
+
+            # Handle Z out-of-bounds: above grid top → EMPTY, below grid bottom → SOLID
+            if voxel_idx[2] >= nz:
+                in_empty_voxel = True
+                expected_sign = SignConvention.EMPTY.value
+            elif voxel_idx[2] < 0:
+                in_empty_voxel = False
+                expected_sign = SignConvention.SOLID.value
+            else:
+                iz = int(voxel_idx[2])
+                in_empty_voxel = bool(state.empty_mask[ix, iy, iz])
+
+                # Determine expected sign from voxel classification
+                if in_empty_voxel:
+                    expected_sign = SignConvention.EMPTY.value
+                elif pos[2] < state.ground_level:
+                    expected_sign = SignConvention.SOLID.value
+                else:
+                    # Above ground but not in an empty voxel: could be near the
+                    # surface or in a region flood fill didn't reach. Default to
+                    # EMPTY since above-ground non-occupied space is generally
+                    # free space.
+                    expected_sign = SignConvention.EMPTY.value
+
+            if current_sign != expected_sign:
+                # Flip the constraint
+                new_constraint = gc.constraint.copy()
+                new_constraint["sign"] = expected_sign
+
+                # Flip distance sign for sample_point constraints
+                if "distance" in new_constraint:
+                    new_constraint["distance"] = -new_constraint["distance"]
+
+                validated.append(GeneratedConstraint(
+                    constraint=new_constraint,
+                    algorithm=gc.algorithm,
+                    confidence=gc.confidence,
+                    description=gc.description,
+                ))
+                stats["n_flipped"] += 1
+                logger.debug(
+                    "Flipped sign %s→%s for constraint at (%.2f, %.2f, %.2f) "
+                    "(in_empty=%s, ground=%.2f, algorithm=%s)",
+                    current_sign, expected_sign,
+                    pos[0], pos[1], pos[2],
+                    in_empty_voxel, state.ground_level,
+                    gc.algorithm.value,
+                )
+            else:
+                validated.append(gc)
+
+        return validated, stats
+
+    def _get_constraint_position(self, constraint: dict) -> np.ndarray | None:
+        """Extract the 3D position of a constraint for sign validation.
+
+        Returns the position as a numpy array (3,), or None if the constraint
+        type doesn't have a locatable position.
+        """
+        c_type = constraint.get("type")
+
+        if c_type == "sample_point":
+            pos = constraint.get("position")
+        elif c_type == "box":
+            pos = constraint.get("center")
+        elif c_type == "sphere":
+            pos = constraint.get("center")
+        elif c_type == "pocket":
+            pos = constraint.get("centroid")
+        else:
+            # Try common field names
+            for field in ["center", "position", "point", "centroid"]:
+                if field in constraint:
+                    pos = constraint[field]
+                    break
+            else:
+                return None
+
+        if pos is None:
+            return None
+
+        return np.array(pos, dtype=float)

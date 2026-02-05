@@ -79,6 +79,10 @@ class AnalyzerConfig:
     pocket_min_volume_voxels: int = 10
     """Minimum voxels for a pocket to be considered significant."""
 
+    # Sign validation
+    validate_signs: bool = True
+    """Validate and correct constraint signs using flood_fill voxel classification."""
+
 
 @dataclass
 class SamplerConfig:

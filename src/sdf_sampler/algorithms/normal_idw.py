@@ -69,6 +69,7 @@ def generate_idw_normal_samples(
                         "sign": sample_sign,
                         "position": tuple(sample_pos.tolist()),
                         "distance": float(sign * dist),
+                        "algorithm": AlgorithmType.NORMAL_IDW.value,
                     },
                     algorithm=AlgorithmType.NORMAL_IDW,
                     confidence=0.8,
